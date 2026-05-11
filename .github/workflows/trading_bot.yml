@@ -1,54 +1,41 @@
 name: Trading Bot Auto Scanner
-
 on:
   schedule:
-    - cron: "0 0,4,8,12,16,20 * * *"
+    - cron: '0 0,4,8,12,16,20 * * *'
   workflow_dispatch:
-
 jobs:
   trading-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
-      - name: Checkout kode
+      - name: Checkout
         uses: actions/checkout@v3
-
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-          cache: "pip"
-
+          python-version: '3.11'
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
+        run: pip install -r requirements.txt
       - name: Setup folders
         run: mkdir -p logs data config
-
-      - name: Setup environment
+      - name: Setup env
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          MODAL_TOTAL: ${{ secrets.MODAL_TOTAL }}
+          RISK_PER_TRADE: ${{ secrets.RISK_PER_TRADE }}
+          MAX_DRAWDOWN_HARIAN: ${{ secrets.MAX_DRAWDOWN_HARIAN }}
+          MAX_DRAWDOWN_TOTAL: ${{ secrets.MAX_DRAWDOWN_TOTAL }}
         run: |
-          cat > config/.env << EOF
-          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
-          DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
-          MODAL_TOTAL=${{ secrets.MODAL_TOTAL }}
-          RISK_PER_TRADE=${{ secrets.RISK_PER_TRADE }}
-          MAX_DRAWDOWN_HARIAN=${{ secrets.MAX_DRAWDOWN_HARIAN }}
-          MAX_DRAWDOWN_TOTAL=${{ secrets.MAX_DRAWDOWN_TOTAL }}
-          BINANCE_TESTNET=true
-          BYBIT_TESTNET=true
-          EOF
-
-      - name: Restore jurnal
-        uses: actions/cache@v3
-        with:
-          path: logs/
-          key: trading-data-${{ github.run_number }}
-          restore-keys: trading-data-
-
-      - name: Jalankan Trading Bot
+          echo "GROQ_API_KEY=$GROQ_API_KEY" > config/.env
+          echo "DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK_URL" >> config/.env
+          echo "MODAL_TOTAL=$MODAL_TOTAL" >> config/.env
+          echo "RISK_PER_TRADE=$RISK_PER_TRADE" >> config/.env
+          echo "MAX_DRAWDOWN_HARIAN=$MAX_DRAWDOWN_HARIAN" >> config/.env
+          echo "MAX_DRAWDOWN_TOTAL=$MAX_DRAWDOWN_TOTAL" >> config/.env
+          echo "BINANCE_TESTNET=true" >> config/.env
+          echo "BYBIT_TESTNET=true" >> config/.env
+      - name: Run bot
         run: python scheduler.py --once
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -58,11 +45,10 @@ jobs:
           MAX_DRAWDOWN_HARIAN: ${{ secrets.MAX_DRAWDOWN_HARIAN }}
           MAX_DRAWDOWN_TOTAL: ${{ secrets.MAX_DRAWDOWN_TOTAL }}
           PYTHONPATH: ${{ github.workspace }}
-
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: trading-logs-${{ github.run_number }}
+          name: logs-${{ github.run_number }}
           path: logs/
           retention-days: 30
