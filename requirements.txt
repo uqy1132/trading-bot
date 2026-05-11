@@ -1,0 +1,12 @@
+﻿ccxt==4.3.1
+pandas==2.2.0
+numpy==1.26.4
+anthropic==0.25.0
+python-telegram-bot==21.0.1
+requests==2.31.0
+python-dotenv==1.0.1
+streamlit==1.32.0
+vectorbt==0.26.1
+yfinance==0.2.38
+schedule==1.2.1
+colorlog==6.8.2

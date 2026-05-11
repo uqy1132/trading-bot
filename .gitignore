@@ -1,0 +1,13 @@
+# API Keys & Config sensitif
+config/.env
+
+# Log & data lokal
+logs/
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Data lokal yang tidak perlu
+*.json
+!requirements.txt
