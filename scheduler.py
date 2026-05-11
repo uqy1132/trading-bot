@@ -2,7 +2,23 @@ import sys
 sys.path.append("C:\\TradingBot")
 
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+urllib3.disable_warnings()
+sys.path.append('.')
+
+print("=== Bot Starting ===")
+print(f"Python version: {sys.version}")
+
+try:
+    print("Importing scheduler...")
+    from scheduler import scan_dan_alert
+    print("Import OK, running scan...")
+    scan_dan_alert()
+    print("=== Scan Complete ===")
+except Exception as e:
+    import traceback
+    print(f"ERROR: {e}")
+    traceback.print_exc()
+    sys.exit(1)
 
 import schedule
 import time
