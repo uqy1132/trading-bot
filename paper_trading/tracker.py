@@ -220,6 +220,52 @@ def statistik_paper() -> dict:
         "evaluasi"       : []
     }
 
+def tutup_paper_trade(trade_id, harga_keluar, hasil):
+    from execution.order_manager import hitung_pnl_bersih
+
+    trades = load_paper_trades()
+    config = load_paper_config()
+
+    for t in trades:
+        if t["id"] == trade_id and t["status"] == "OPEN":
+            # Hitung PnL bersih dengan fee
+            pnl_detail = hitung_pnl_bersih(
+                aksi     = t["aksi"],
+                entry    = t["fill_price"],
+                keluar   = harga_keluar,
+                ukuran   = t["ukuran"],
+                leverage = t["leverage"]
+            )
+
+            pnl_idr = pnl_detail["pnl_bersih"] * KURS
+            pnl_pct = (pnl_idr / config["modal_sim"]) * 100
+
+            masuk = datetime.strptime(t["tanggal"], "%Y-%m-%d %H:%M")
+            durasi = round((datetime.now() - masuk).total_seconds() / 3600, 1)
+
+            t.update({
+                "status"       : "CLOSED",
+                "hasil"        : hasil,
+                "harga_keluar" : harga_keluar,
+                "pnl_kotor"    : pnl_detail["pnl_kotor"],
+                "total_fee"    : pnl_detail["total_fee"],
+                "pnl_bersih"   : pnl_detail["pnl_bersih"],
+                "pnl_idr"      : round(pnl_idr, 0),
+                "pnl_pct_modal": round(pnl_pct, 2),
+                "tanggal_tutup": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "durasi_jam"   : durasi
+            })
+
+            config["modal_sim"] = round(config["modal_sim"] + pnl_idr, 0)
+            break
+
+    with open(PAPER_FILE, "w") as f:
+        json.dump(trades, f, indent=2, ensure_ascii=False)
+    with open(PAPER_CONFIG, "w") as f:
+        json.dump(config, f, indent=2)
+
+    return t
+
 def laporan_mingguan() -> dict:
     """Buat laporan evaluasi mingguan."""
     trades = load_paper_trades()

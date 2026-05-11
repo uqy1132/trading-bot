@@ -9,6 +9,143 @@ from notifications.discord_alert import kirim_discord
 VIRTUAL_POSITIONS_FILE = "logs/virtual_positions.json"
 os.makedirs("logs", exist_ok=True)
 
+# Konstanta fee Bybit Futures
+TAKER_FEE = 0.00055   # 0.055% per sisi
+MAKER_FEE = 0.00020   # 0.020% per sisi
+
+def hitung_pnl_bersih(aksi, entry, keluar, ukuran, leverage, fee_type="taker"):
+    """
+    Hitung PnL dengan fee dan slippage sudah diperhitungkan.
+    Ini yang membuat backtest dan paper trading akurat.
+    """
+    fee_rate = TAKER_FEE if fee_type == "taker" else MAKER_FEE
+
+    # PnL kotor
+    if aksi in ["BUY", "LONG"]:
+        pnl_kotor = (keluar - entry) * ukuran
+    else:
+        pnl_kotor = (entry - keluar) * ukuran
+
+    # Biaya entry dan exit
+    nilai_entry = entry * ukuran
+    nilai_exit  = keluar * ukuran
+    fee_entry   = nilai_entry * fee_rate
+    fee_exit    = nilai_exit  * fee_rate
+    total_fee   = fee_entry + fee_exit
+
+    # Funding rate estimate (8 jam sekali, ~0.01% per hari)
+    funding_cost = nilai_entry * 0.0001
+
+    pnl_bersih = pnl_kotor - total_fee - funding_cost
+
+    return {
+        "pnl_kotor"    : round(pnl_kotor, 4),
+        "fee_entry"    : round(fee_entry, 4),
+        "fee_exit"     : round(fee_exit, 4),
+        "total_fee"    : round(total_fee, 4),
+        "funding_cost" : round(funding_cost, 4),
+        "pnl_bersih"   : round(pnl_bersih, 4),
+        "fee_pct_pnl"  : round(total_fee / abs(pnl_kotor) * 100, 1) if pnl_kotor != 0 else 0
+    }
+
+def update_trailing_stop(posisi: dict, harga_kini: float) -> dict:
+    """
+    Geser SL otomatis mengikuti harga.
+    - Breakeven: saat profit >= 1R, SL geser ke entry
+    - Trailing: saat profit >= 2R, SL mengikuti harga - 1R
+    """
+    entry    = posisi["fill_price"]
+    sl       = posisi["stop_loss"]
+    jarak_sl = abs(entry - sl)
+
+    if posisi["aksi"] in ["BUY", "LONG"]:
+        profit    = harga_kini - entry
+        r_multiple = profit / jarak_sl if jarak_sl > 0 else 0
+
+        if r_multiple >= 2.0:
+            # Trailing: SL mengikuti harga - 1R
+            new_sl = harga_kini - jarak_sl
+            if new_sl > posisi["stop_loss"]:
+                posisi["stop_loss"] = round(new_sl, 4)
+                posisi["trailing"]  = True
+
+        elif r_multiple >= 1.0:
+            # Breakeven: SL ke entry
+            if posisi["stop_loss"] < entry:
+                posisi["stop_loss"] = entry
+                posisi["breakeven"] = True
+    else:
+        profit    = entry - harga_kini
+        r_multiple = profit / jarak_sl if jarak_sl > 0 else 0
+
+        if r_multiple >= 2.0:
+            new_sl = harga_kini + jarak_sl
+            if new_sl < posisi["stop_loss"]:
+                posisi["stop_loss"] = round(new_sl, 4)
+                posisi["trailing"]  = True
+
+        elif r_multiple >= 1.0:
+            if posisi["stop_loss"] > entry:
+                posisi["stop_loss"] = entry
+                posisi["breakeven"] = True
+
+    return posisi
+
+def update_virtual_positions():
+    positions = load_virtual_positions()
+    closed_now = []
+
+    for pos in positions:
+        if pos["status"] != "OPEN":
+            continue
+        try:
+            df    = get_ohlcv(pos["symbol"], "1h", 2)
+            harga = float(df["close"].iloc[-1])
+
+            # Update trailing stop dulu
+            pos = update_trailing_stop(pos, harga)
+
+            # Cek SL/TP
+            if pos["aksi"] in ["BUY", "LONG"]:
+                hit_sl = harga <= pos["stop_loss"]
+                hit_tp = harga >= pos["take_profit"]
+                pnl    = hitung_pnl_bersih(
+                    pos["aksi"], pos["fill_price"], harga,
+                    pos["ukuran"], pos["leverage"]
+                )["pnl_bersih"]
+            else:
+                hit_sl = harga >= pos["stop_loss"]
+                hit_tp = harga <= pos["take_profit"]
+                pnl    = hitung_pnl_bersih(
+                    pos["aksi"], pos["fill_price"], harga,
+                    pos["ukuran"], pos["leverage"]
+                )["pnl_bersih"]
+
+            if hit_tp or hit_sl:
+                hasil = "WIN" if hit_tp else "LOSS"
+                pos.update({
+                    "status"     : "CLOSED",
+                    "hasil"      : hasil,
+                    "harga_keluar": harga,
+                    "pnl_usdt"   : pnl,
+                    "waktu_tutup": datetime.now().strftime("%Y-%m-%d %H:%M")
+                })
+                emoji = "🟢" if hit_tp else "🔴"
+                trailing_info = " | 🎯 Trailing SL" if pos.get("trailing") else ""
+                kirim_discord(
+                    f"{emoji} **VIRTUAL CLOSED**\n"
+                    f"**{pos['symbol']}** {pos['aksi']}\n"
+                    f"Hasil: **{hasil}** | Harga: `${harga:,.4f}`\n"
+                    f"PnL bersih: `{'+' if pnl > 0 else ''}{pnl:.4f} USDT`{trailing_info}"
+                )
+                closed_now.append(pos)
+
+        except Exception as e:
+            print(f"Error update {pos['symbol']}: {e}")
+
+    simpan_virtual_positions(positions)
+    return closed_now
+
 def load_virtual_positions() -> list:
     if not os.path.exists(VIRTUAL_POSITIONS_FILE):
         return []
