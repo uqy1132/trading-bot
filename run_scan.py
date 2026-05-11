@@ -1,21 +1,16 @@
 import sys
-import urllib3
-urllib3.disable_warnings()
-sys.path.append('.')
+print("HELLO FROM PYTHON", flush=True)
+print(f"Python: {sys.version}", flush=True)
 
-print("=== Bot Starting ===")
-print(f"Python version: {sys.version}")
+import os
+print(f"GROQ_API_KEY exists: {'GROQ_API_KEY' in os.environ}", flush=True)
+print(f"DISCORD_WEBHOOK_URL exists: {'DISCORD_WEBHOOK_URL' in os.environ}", flush=True)
 
-try:
-    print("Importing scheduler...")
-    from scheduler import scan_dan_alert, auto_trade_loop, monitor_posisi
-    print("Import OK, running scan...")
-    scan_dan_alert()
-    auto_trade_loop()
-    monitor_posisi()
-    print("=== All Done ===")
-except Exception as e:
-    import traceback
-    print(f"ERROR: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+# Test Discord langsung tanpa import scheduler
+import requests
+webhook = os.environ.get("DISCORD_WEBHOOK_URL", "")
+if webhook:
+    r = requests.post(webhook, json={"content": "✅ GitHub Actions test!"}, verify=False)
+    print(f"Discord status: {r.status_code}", flush=True)
+else:
+    print("ERROR: DISCORD_WEBHOOK_URL kosong!", flush=True)
