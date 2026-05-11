@@ -1,17 +1,9 @@
-name: 🤖 Trading Bot Auto Scanner
+name: Trading Bot Auto Scanner
 
 on:
   schedule:
-    # Tiap 4 jam (UTC) = jam 07, 11, 15, 19, 23 WIB
-    - cron: '0 0,4,8,12,16,20 * * *'
-  
-  # Bisa trigger manual dari GitHub
+    - cron: "0 0,4,8,12,16,20 * * *"
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Mode run'
-        required: false
-        default: 'scan'
 
 jobs:
   trading-scan:
@@ -19,32 +11,24 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # 1. Download kode dari GitHub
-      - name: 📥 Checkout kode
+      - name: Checkout kode
         uses: actions/checkout@v3
 
-      # 2. Setup Python
-      - name: 🐍 Setup Python 3.11
+      - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
-      # 3. Install library
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. Buat folder yang dibutuhkan
-      - name: 📁 Setup folders
-        run: |
-          mkdir -p logs
-          mkdir -p data
-          mkdir -p config
+      - name: Setup folders
+        run: mkdir -p logs data config
 
-      # 5. Buat config/.env dari GitHub Secrets
-      - name: 🔐 Setup environment
+      - name: Setup environment
         run: |
           cat > config/.env << EOF
           GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
@@ -57,18 +41,14 @@ jobs:
           BYBIT_TESTNET=true
           EOF
 
-      # 6. Restore data jurnal dari cache
-      - name: 💾 Restore jurnal & data
+      - name: Restore jurnal
         uses: actions/cache@v3
         with:
-          path: |
-            logs/
+          path: logs/
           key: trading-data-${{ github.run_number }}
-          restore-keys: |
-            trading-data-
+          restore-keys: trading-data-
 
-      # 7. Jalankan bot
-      - name: 🚀 Jalankan Trading Bot
+      - name: Jalankan Trading Bot
         run: python scheduler.py --once
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -77,10 +57,9 @@ jobs:
           RISK_PER_TRADE: ${{ secrets.RISK_PER_TRADE }}
           MAX_DRAWDOWN_HARIAN: ${{ secrets.MAX_DRAWDOWN_HARIAN }}
           MAX_DRAWDOWN_TOTAL: ${{ secrets.MAX_DRAWDOWN_TOTAL }}
-          PYTHONPATH: /home/runner/work/trading-bot/trading-bot
+          PYTHONPATH: ${{ github.workspace }}
 
-      # 8. Simpan log hasil run
-      - name: 📊 Upload logs
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v3
         with:
