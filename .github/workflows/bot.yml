@@ -2,12 +2,15 @@ name: Trading Bot Scheduler
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # Setiap 4 jam
-    - cron: '0 1 * * *'    # Jam 08:00 WIB (01:00 UTC)
-    - cron: '0 5 * * *'    # Jam 12:00 WIB (05:00 UTC)
-    - cron: '0 9 * * *'    # Jam 16:00 WIB (09:00 UTC)
-    - cron: '0 13 * * *'   # Jam 20:00 WIB (13:00 UTC)
-  workflow_dispatch:         # Bisa juga dijalankan manual
+    - cron: '0 */4 * * *'
+    - cron: '0 1 * * *'
+    - cron: '0 5 * * *'
+    - cron: '0 9 * * *'
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-bot:
@@ -16,15 +19,15 @@ jobs:
 
     steps:
       - name: Checkout kode
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Cache pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements_vps.txt') }}
@@ -33,12 +36,12 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements_vps.txt
-          pip install ta groq scipy
+          pip install ta groq scipy requests python-dotenv
 
       - name: Buat config .env
         run: |
-          mkdir -p config
-          cat > config/.env << EOF
+          mkdir -p config logs
+          cat > config/.env << 'EOF'
           GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
           DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}
           MODAL_TOTAL=${{ secrets.MODAL_TOTAL }}
@@ -49,11 +52,9 @@ jobs:
           BINANCE_TESTNET=true
           EOF
 
-      - name: Buat folder logs
-        run: mkdir -p logs
-
       - name: Jalankan scan bot
-        run: python -c "
+        run: |
+          python -c "
           import sys, urllib3
           urllib3.disable_warnings()
           sys.path.append('.')
