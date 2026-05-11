@@ -51,13 +51,6 @@ jobs:
           TARGET_BULANAN=0.04
           BINANCE_TESTNET=true
           EOF
-
       - name: Jalankan scan bot
-        run: |
-          python -c "
-          import sys, urllib3
-          urllib3.disable_warnings()
-          sys.path.append('.')
-          from scheduler import scan_dan_alert
-          scan_dan_alert()
-          "
+        run: python -c "import sys, urllib3; urllib3.disable_warnings(); sys.path.append('.'); from scheduler import scan_dan_alert; scan_dan_alert()"
+      
