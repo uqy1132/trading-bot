@@ -51,5 +51,8 @@ jobs:
           TARGET_BULANAN=0.04
           BINANCE_TESTNET=true
           EOF
+
       - name: Jalankan scan bot
-        run: python run_scan.py
+        run: python -u run_scan.py
+        env:
+          PYTHONUNBUFFERED: "1"
