@@ -1,0 +1,44 @@
+[
+  {
+    "order_id": "VIRTUAL_20260511081855",
+    "symbol": "BTC/USDT",
+    "aksi": "BUY",
+    "ukuran": 0.003703,
+    "entry_plan": 81400,
+    "fill_price": 81650.4048,
+    "stop_loss": 80500,
+    "take_profit": 82500,
+    "leverage": 2,
+    "status": "OPEN",
+    "waktu": "2026-05-11 08:18",
+    "pnl_usdt": 0
+  },
+  {
+    "order_id": "VIRTUAL_20260511081903",
+    "symbol": "SOL/USDT",
+    "aksi": "BUY",
+    "ukuran": 0.775194,
+    "entry_plan": 94.5,
+    "fill_price": 96.2681,
+    "stop_loss": 90.2,
+    "take_profit": 100.8,
+    "leverage": 2,
+    "status": "OPEN",
+    "waktu": "2026-05-11 08:19",
+    "pnl_usdt": 0
+  },
+  {
+    "order_id": "VIRTUAL_20260511081909",
+    "symbol": "XRP/USDT",
+    "aksi": "BUY",
+    "ukuran": 55.555555,
+    "entry_plan": 1.4546,
+    "fill_price": 1.4658,
+    "stop_loss": 1.3946,
+    "take_profit": 1.5146,
+    "leverage": 2,
+    "status": "OPEN",
+    "waktu": "2026-05-11 08:19",
+    "pnl_usdt": 0
+  }
+]
