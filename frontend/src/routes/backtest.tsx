@@ -15,13 +15,14 @@ export const Route = createFileRoute("/backtest")({
 
 function BacktestPage() {
   const [symbol, setSymbol] = useState("BTC/USDT");
-  const [tf, setTf] = useState("4H");
-  const [months, setMonths] = useState(6);
+  const [tf, setTf] = useState("15M");
+  const [months, setMonths] = useState(3);
   const [result, setResult] = useState<BacktestData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const candles = months * 30 * (tf === "1H" ? 24 : tf === "4H" ? 6 : 1);
+  const tfMultiplier: Record<string, number> = { "15M": 96, "30M": 48, "1H": 24, "4H": 6, "1D": 1 };
+  const candles = Math.min(months * 30 * (tfMultiplier[tf] ?? 24), 2000);
 
   const handleRun = useCallback(async () => {
     setLoading(true);

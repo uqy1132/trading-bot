@@ -1,6 +1,6 @@
 // Mock data for the trading dashboard
 export const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "HYPE/USDT", "TRX/USDT"];
-export const TIMEFRAMES = ["1H", "4H", "1D"];
+export const TIMEFRAMES = ["15M", "30M", "1H", "4H", "1D"];
 export const LEVERAGES = [1, 2, 3, 5];
 
 export const marketContext = {

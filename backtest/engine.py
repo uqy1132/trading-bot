@@ -5,127 +5,30 @@ import pandas as pd
 import numpy as np
 from data.crypto_data import get_ohlcv
 from strategies.indicators import hitung_semua_indikator
+from strategies.smc import analisa_smc
 
-FEE_RATE    = 0.0004   # 0.04% taker per sisi (OKX/Gate)
-SLIPPAGE    = 0.0003   # 0.03% slippage per sisi
-SKOR_MIN    = 7        # sama dengan threshold layak_trade di live analisa
-WARMUP      = 60       # candle awal yang dilewati agar indikator stabil
-TP_RR       = 1.5      # target 1.5R — lebih realistis, WR lebih tinggi vs 2.5R
-ALLOW_SHORT = False    # crypto cenderung bullish, short sering rugi
+FEE_RATE = 0.0004   # 0.04% taker per sisi (OKX/Gate)
+SLIPPAGE = 0.0003   # 0.03% slippage per sisi
+TP_RR    = 3.0      # Kevin Sailly 1:3
+WARMUP   = 80       # candle awal yang dilewati agar OB detection stabil
+COOLDOWN = 5        # candle jeda minimum antar evaluasi sinyal
 
 
-def _skor_inline(df: pd.DataFrame, i: int) -> int:
+def backtest_strategi(symbol: str, timeframe: str = "15m", limit: int = 500) -> dict:
     """
-    Replika hitung_skor_sinyal tanpa market_context/MTF
-    (tidak tersedia di data historis).
-    Skor max = 14 (vs 21+ di live yang punya konteks pasar).
+    Backtest strategi SMC / Order Block — Kevin Sailly style.
+    Entry: price masuk zona OTE/OB (bullish)
+    SL   : OB low
+    TP   : entry + (entry - SL) * 3  → RR 1:3
     """
-    baris      = df.iloc[i]
-    baris_prev = df.iloc[i - 1]
-    skor = 0
-
-    # 1. Market structure — last 20 bars
-    start = max(0, i - 19)
-    highs = df["high"].values[start : i + 1]
-    lows  = df["low"].values[start : i + 1]
-    sh = [highs[j] for j in range(1, len(highs) - 1)
-          if highs[j] > highs[j - 1] and highs[j] > highs[j + 1]]
-    sl_pts = [lows[j] for j in range(1, len(lows) - 1)
-              if lows[j] < lows[j - 1] and lows[j] < lows[j + 1]]
-    if len(sh) >= 2 and len(sl_pts) >= 2:
-        if sh[-1] > sh[-2] and sl_pts[-1] > sl_pts[-2]:    # HH + HL
-            skor += 3
-        elif sh[-1] < sh[-2] and sl_pts[-1] < sl_pts[-2]:  # LH + LL
-            skor -= 3
-
-    # 2. EMA alignment
-    close, e20, e50 = float(baris["close"]), float(baris["ema_20"]), float(baris["ema_50"])
-    if close > e20 > e50:
-        skor += 2
-    elif close < e20 < e50:
-        skor -= 2
-
-    # 3. ADX — direction-aware
-    adx  = float(baris["adx"])
-    bull = close > e20 > e50
-    bear = close < e20 < e50
-    if adx > 30:
-        skor += 2 if bull else (-2 if bear else 1)
-    elif adx > 20:
-        skor += 1 if bull else (-1 if bear else 0)
-
-    # 4. RSI
-    rsi = float(baris["rsi"])
-    if 45 <= rsi <= 60:   skor += 2
-    elif rsi < 35:         skor += 1
-    elif rsi > 70:         skor -= 2
-
-    # 5. MACD
-    mh  = float(baris.get("macd_hist",   0) or 0)
-    mhp = float(baris_prev.get("macd_hist", 0) or 0)
-    mv  = float(baris.get("macd",         0) or 0)
-    ms  = float(baris.get("macd_signal",  0) or 0)
-    if   mv > ms and mh > 0 and mh > mhp:   skor += 2
-    elif mv > ms and mh > 0:                 skor += 1
-    elif mv < ms and mh < 0 and mh < mhp:   skor -= 2
-    elif mv < ms:                            skor -= 1
-
-    # 6. Volume
-    vr = float(baris["vol_ratio"])
-    if   vr > 1.5:  skor += 2
-    elif vr > 1.0:  skor += 1
-
-    # 7. Bollinger Band position
-    bb_range = float(baris["bb_upper"]) - float(baris["bb_lower"])
-    if bb_range > 0:
-        bb_pos = (close - float(baris["bb_lower"])) / bb_range
-        if   0.4 <= bb_pos <= 0.7:  skor += 1
-        elif bb_pos < 0.2:           skor += 1
-        elif bb_pos > 0.9:           skor -= 1
-
-    return skor
-
-
-def _konsensus_inline(df: pd.DataFrame, i: int) -> str:
-    """Replika logika konsensus analisa_lengkap di candle ke-i.
-
-    SELL dipersyaratkan lebih ketat: selain overbought, EMA juga harus bearish
-    (close < ema_50) agar tidak short di tengah uptrend.
-    """
-    baris      = df.iloc[i]
-    baris_prev = df.iloc[i - 1]
-
-    close = float(baris["close"])
-    e20   = float(baris["ema_20"])
-    e50   = float(baris["ema_50"])
-    adx   = float(baris["adx"])
-
-    ema_cross_up = (float(baris_prev["ema_20"]) < float(baris_prev["ema_50"]) and e20 > e50)
-    tren_kuat    = adx > 25
-    oversold     = float(baris["rsi"]) < 32 and close <= float(baris["bb_lower"]) * 1.005
-
-    # Breakout: close > 20-bar high (tidak termasuk candle sekarang) + volume tinggi
-    resistance = float(df["high"].values[max(0, i - 20) : i].max()) if i > 0 else 0.0
-    breakout   = close > resistance and float(baris["vol_ratio"]) > 2.0
-
-    # SELL: overbought + EMA bearish — hindari short di aset yang masih uptrend
-    overbought    = float(baris["rsi"]) > 68 and close >= float(baris["bb_upper"]) * 0.995
-    ema_bearish   = close < e50 and e20 < e50
-
-    buy_count  = sum([ema_cross_up and tren_kuat, oversold, breakout])
-    sell_signal = overbought and ema_bearish
-
-    if buy_count >= 1:   return "BUY"   # skor >= 7 jadi filter kualitas utama
-    if sell_signal:      return "SELL"
-    return "HOLD"
-
-
-def backtest_strategi(symbol: str, timeframe: str = "4h", limit: int = 500) -> dict:
     try:
-        df = get_ohlcv(symbol, timeframe, limit)
+        tf_map = {"15M": "15m", "30M": "30m", "1H": "1h", "4H": "4h", "1D": "1d"}
+        tf = tf_map.get(timeframe.upper(), timeframe.lower())
+
+        df = get_ohlcv(symbol, tf, limit)
         df = hitung_semua_indikator(df)
 
-        if len(df) < WARMUP + 10:
+        if len(df) < WARMUP + 20:
             return {"error": "Data tidak cukup untuk backtest"}
 
         modal          = 1000.0
@@ -134,121 +37,112 @@ def backtest_strategi(symbol: str, timeframe: str = "4h", limit: int = 500) -> d
         trades         = []
         equity         = [modal]
         posisi         = None
-
-        skor_prev = 0  # track skor candle sebelumnya untuk deteksi fresh signal
+        last_eval      = -COOLDOWN  # candle terakhir dievaluasi
 
         for i in range(WARMUP, len(df)):
             baris = df.iloc[i]
+            high  = float(baris["high"])
+            low   = float(baris["low"])
+            close = float(baris["close"])
 
+            # ── Cari sinyal (hanya saat tidak ada posisi terbuka) ────────────
             if posisi is None:
-                skor  = _skor_inline(df, i)
-                close = float(baris["close"])
-                e50   = float(baris["ema_50"])
+                if i - last_eval < COOLDOWN:
+                    continue
+                last_eval = i
 
-                # Momentum filter — hanya masuk saat aset sedang in-momentum
-                if i >= 20:
-                    roc_20    = float(df["close"].iloc[i] / df["close"].iloc[i - 20] - 1) * 100
-                    vol_14    = float(df["close"].pct_change().iloc[max(0, i - 14) : i].std()) * 100
-                    mom_ratio = roc_20 / max(vol_14, 0.1)
-                    in_mom    = roc_20 > 2 and mom_ratio > 0.3
-                else:
-                    in_mom = False
-
-                # Fresh signal: skor baru saja melewati threshold + dalam momentum
-                fresh_buy  = skor >= SKOR_MIN and skor_prev < SKOR_MIN and close > e50 and in_mom
-                fresh_sell = False  # ALLOW_SHORT = False, crypto bullish bias
-
-                skor_prev = skor
-
-                if not fresh_buy and not fresh_sell:
+                # SMC analysis pada window historis sampai candle ke-i
+                window = df.iloc[max(0, i - 150): i + 1]
+                try:
+                    smc = analisa_smc(window)
+                except Exception:
                     continue
 
-                entry = float(baris["close"])
-                atr   = float(baris["atr"]) if float(baris["atr"]) > 0 else entry * 0.01
+                quality   = smc.get("entry_quality", "WAIT")
+                near_bull = smc.get("nearest_bull_ob")
 
-                if fresh_buy:
-                    swing_low = float(df["low"].values[max(0, i - 20) : i].min())
-                    sl        = max(swing_low - 0.3 * atr, entry * 0.95)
-                    sl        = min(sl, entry - 0.5 * atr)
-                    jarak     = entry - sl
-                    if jarak <= 0:
-                        continue
-                    tp        = entry + jarak * TP_RR
-                    entry_eff = entry * (1 + SLIPPAGE)
-                    posisi = {
-                        "entry": entry, "entry_eff": entry_eff,
-                        "sl": sl, "tp": tp,
-                        "ukuran": (modal * risk_per_trade) / jarak,
-                        "arah": "BUY", "skor": skor,
-                        "tanggal_masuk": str(df.index[i]),
-                    }
+                if quality not in ("OPTIMAL", "VALID") or not near_bull:
+                    continue
 
-                else:  # fresh_sell
-                    swing_high = float(df["high"].values[max(0, i - 20) : i].max())
-                    sl         = min(swing_high + 0.3 * atr, entry * 1.05)
-                    sl         = max(sl, entry + 0.5 * atr)
-                    jarak      = sl - entry
-                    if jarak <= 0:
-                        continue
-                    tp         = entry - jarak * TP_RR
-                    entry_eff  = entry * (1 - SLIPPAGE)
-                    posisi = {
-                        "entry": entry, "entry_eff": entry_eff,
-                        "sl": sl, "tp": tp,
-                        "ukuran": (modal * risk_per_trade) / jarak,
-                        "arah": "SELL", "skor": skor,
-                        "tanggal_masuk": str(df.index[i]),
-                    }
+                # Konfirmasi RSI + EMA
+                cl    = window["close"]
+                delta = cl.diff()
+                gain  = delta.clip(lower=0).rolling(14).mean()
+                loss  = (-delta.clip(upper=0)).rolling(14).mean()
+                rsi   = float(100 - 100 / (1 + (gain / (loss + 1e-8)).iloc[-1]))
+                ema20 = float(cl.ewm(span=20).mean().iloc[-1])
+                ema50 = float(cl.ewm(span=50).mean().iloc[-1])
 
+                conf = 0
+                if smc["in_bull_ote"]:  conf += 3
+                elif smc["in_bull_ob"]: conf += 2
+                if rsi < 45:            conf += 1
+                if ema20 > ema50:       conf += 1
+                if conf < 3:
+                    continue
+
+                # Hitung level entry / SL / TP
+                ob_mid = near_bull["midpoint"]
+                ob_sl  = near_bull["ob_low"]
+                risk   = ob_mid - ob_sl
+                if risk <= 0:
+                    continue
+                ob_tp = ob_mid + risk * TP_RR
+
+                # Masuk di close candle (market order simulasi)
+                entry     = close
+                entry_eff = entry * (1 + SLIPPAGE)
+
+                # SL tidak boleh lebih dari 8% di bawah entry (hindari sizing ekstrem)
+                if (entry - ob_sl) / entry > 0.08:
+                    continue
+
+                ukuran = (modal * risk_per_trade) / (entry - ob_sl)
+                if ukuran <= 0:
+                    continue
+
+                posisi = {
+                    "entry"        : entry,
+                    "entry_eff"    : entry_eff,
+                    "sl"           : ob_sl,
+                    "tp"           : ob_tp,
+                    "ukuran"       : ukuran,
+                    "quality"      : quality,
+                    "conf"         : conf,
+                    "tanggal_masuk": str(df.index[i]),
+                }
+
+            # ── Manage posisi terbuka ─────────────────────────────────────────
             else:
-                # Update skor_prev selama posisi terbuka agar fresh-signal bekerja setelah exit
-                skor_prev = _skor_inline(df, i)
+                hasil = keluar = pnl = keluar_eff = None
 
-                harga  = float(baris["close"])
-                hasil  = None
-                keluar = None
-                pnl    = None
-
-                if posisi["arah"] == "BUY":
-                    if harga <= posisi["sl"]:
-                        hasil      = "LOSS"
-                        keluar     = posisi["sl"]
-                        keluar_eff = keluar * (1 - SLIPPAGE)
-                        pnl        = (keluar_eff - posisi["entry_eff"]) * posisi["ukuran"]
-                    elif harga >= posisi["tp"]:
-                        hasil      = "WIN"
-                        keluar     = posisi["tp"]
-                        keluar_eff = keluar * (1 - SLIPPAGE)
-                        pnl        = (keluar_eff - posisi["entry_eff"]) * posisi["ukuran"]
-                else:
-                    if harga >= posisi["sl"]:
-                        hasil      = "LOSS"
-                        keluar     = posisi["sl"]
-                        keluar_eff = keluar * (1 + SLIPPAGE)
-                        pnl        = (posisi["entry_eff"] - keluar_eff) * posisi["ukuran"]
-                    elif harga <= posisi["tp"]:
-                        hasil      = "WIN"
-                        keluar     = posisi["tp"]
-                        keluar_eff = keluar * (1 + SLIPPAGE)
-                        pnl        = (posisi["entry_eff"] - keluar_eff) * posisi["ukuran"]
-
-                if pnl is not None:
-                    fee  = (posisi["entry_eff"] + keluar_eff) * posisi["ukuran"] * FEE_RATE
-                    pnl -= fee
+                if low <= posisi["sl"]:
+                    hasil      = "LOSS"
+                    keluar     = posisi["sl"]
+                    keluar_eff = keluar * (1 - SLIPPAGE)
+                    pnl        = (keluar_eff - posisi["entry_eff"]) * posisi["ukuran"]
+                elif high >= posisi["tp"]:
+                    hasil      = "WIN"
+                    keluar     = posisi["tp"]
+                    keluar_eff = keluar * (1 - SLIPPAGE)
+                    pnl        = (keluar_eff - posisi["entry_eff"]) * posisi["ukuran"]
 
                 if hasil:
-                    modal  += pnl
+                    fee   = (posisi["entry_eff"] + keluar_eff) * posisi["ukuran"] * FEE_RATE
+                    pnl  -= fee
+                    modal += pnl
                     pnl_pct = (pnl / (modal - pnl)) * 100
                     trades.append({
                         "tanggal_masuk" : posisi["tanggal_masuk"],
                         "tanggal_keluar": str(df.index[i]),
-                        "arah"          : posisi["arah"],
-                        "skor"          : posisi["skor"],
-                        "entry"         : round(posisi["entry"], 4),
-                        "keluar"        : round(keluar, 4),
+                        "arah"          : "BUY",
+                        "skor"          : posisi["conf"],
+                        "entry"         : round(posisi["entry"], 6),
+                        "keluar"        : round(keluar, 6),
                         "hasil"         : hasil,
                         "pnl_pct"       : round(pnl_pct, 2),
                         "pnl_usdt"      : round(pnl, 4),
+                        "metode"        : f"SMC-{posisi['quality']}",
                     })
                     equity.append(modal)
                     posisi = None
@@ -256,8 +150,8 @@ def backtest_strategi(symbol: str, timeframe: str = "4h", limit: int = 500) -> d
         total = len(trades)
         if total == 0:
             return {"error": (
-                f"Tidak ada trade — tidak ada setup yang memenuhi skor ≥{SKOR_MIN}. "
-                "Coba timeframe 1d atau tambah limit candle (≥500)."
+                "Tidak ada trade — tidak ada setup SMC OTE/VALID yang ditemukan. "
+                "Coba timeframe 15M atau tambah limit candle (≥500)."
             )}
 
         df_trades     = pd.DataFrame(trades)
