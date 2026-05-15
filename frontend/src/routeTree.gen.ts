@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as VirtualRouteImport } from './routes/virtual'
+import { Route as SmcRouteImport } from './routes/smc'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ScanRouteImport } from './routes/scan'
 import { Route as QuantRouteImport } from './routes/quant'
@@ -31,6 +32,11 @@ const WalletRoute = WalletRouteImport.update({
 const VirtualRoute = VirtualRouteImport.update({
   id: '/virtual',
   path: '/virtual',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SmcRoute = SmcRouteImport.update({
+  id: '/smc',
+  path: '/smc',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/quant': typeof QuantRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
+  '/smc': typeof SmcRoute
   '/virtual': typeof VirtualRoute
   '/wallet': typeof WalletRoute
 }
@@ -116,6 +123,7 @@ export interface FileRoutesByTo {
   '/quant': typeof QuantRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
+  '/smc': typeof SmcRoute
   '/virtual': typeof VirtualRoute
   '/wallet': typeof WalletRoute
 }
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/quant': typeof QuantRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
+  '/smc': typeof SmcRoute
   '/virtual': typeof VirtualRoute
   '/wallet': typeof WalletRoute
 }
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
     | '/quant'
     | '/scan'
     | '/settings'
+    | '/smc'
     | '/virtual'
     | '/wallet'
   fileRoutesByTo: FileRoutesByTo
@@ -164,6 +174,7 @@ export interface FileRouteTypes {
     | '/quant'
     | '/scan'
     | '/settings'
+    | '/smc'
     | '/virtual'
     | '/wallet'
   id:
@@ -179,6 +190,7 @@ export interface FileRouteTypes {
     | '/quant'
     | '/scan'
     | '/settings'
+    | '/smc'
     | '/virtual'
     | '/wallet'
   fileRoutesById: FileRoutesById
@@ -195,6 +207,7 @@ export interface RootRouteChildren {
   QuantRoute: typeof QuantRoute
   ScanRoute: typeof ScanRoute
   SettingsRoute: typeof SettingsRoute
+  SmcRoute: typeof SmcRoute
   VirtualRoute: typeof VirtualRoute
   WalletRoute: typeof WalletRoute
 }
@@ -213,6 +226,13 @@ declare module '@tanstack/react-router' {
       path: '/virtual'
       fullPath: '/virtual'
       preLoaderRoute: typeof VirtualRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/smc': {
+      id: '/smc'
+      path: '/smc'
+      fullPath: '/smc'
+      preLoaderRoute: typeof SmcRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -307,6 +327,7 @@ const rootRouteChildren: RootRouteChildren = {
   QuantRoute: QuantRoute,
   ScanRoute: ScanRoute,
   SettingsRoute: SettingsRoute,
+  SmcRoute: SmcRoute,
   VirtualRoute: VirtualRoute,
   WalletRoute: WalletRoute,
 }

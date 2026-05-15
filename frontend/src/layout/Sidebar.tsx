@@ -1,9 +1,10 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { Search, Radio, BookOpen, BarChart3, Calculator, FlaskConical, Sigma, Bot, Settings, ClipboardList, TrendingUp, GitCompare, Wallet, Layers } from "lucide-react";
+import { Search, Radio, BookOpen, BarChart3, Calculator, FlaskConical, Sigma, Bot, Settings, ClipboardList, TrendingUp, GitCompare, Wallet, Layers, Crosshair } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Analisa & Sinyal", icon: Search },
+  { to: "/smc", label: "SMC Scan", icon: Crosshair },
   { to: "/scan", label: "Scan Aset", icon: Radio },
   { to: "/momentum", label: "Momentum", icon: TrendingUp },
   { to: "/pairs", label: "Pairs Trading", icon: GitCompare },

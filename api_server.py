@@ -187,6 +187,26 @@ def health():
     return {"status": "ok", "bot_ready": BOT_READY,
             "modal": MODAL_TOTAL, "watchlist": CRYPTO_WATCHLIST}
 
+@app.get("/api/debug-tickers")
+def debug_tickers():
+    try:
+        from data.crypto_data import get_exchange
+        ex = get_exchange()
+        if not ex.markets:
+            ex.load_markets()
+        swap_syms = [m["symbol"] for m in ex.markets.values()
+                     if m.get("type") == "swap" and m.get("quote") == "USDT"]
+        sample = swap_syms[:5]
+        tickers = ex.fetch_tickers(sample) if sample else {}
+        return {
+            "total_swap_usdt": len(swap_syms),
+            "sample_symbols": sample,
+            "sample_tickers": {k: {"last": v.get("last"), "percentage": v.get("percentage"), "quoteVolume": v.get("quoteVolume")} for k, v in tickers.items()}
+        }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {"error": str(e)}
+
 # ════════════════════════════════════════════════════════
 # MARKET CONTEXT
 # ════════════════════════════════════════════════════════

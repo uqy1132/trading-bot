@@ -351,6 +351,72 @@ export interface PaperData {
   closed: PaperTrade[];
 }
 
+export interface SmcOB {
+  type: "bullish" | "bearish";
+  index: number;
+  ob_high: number;
+  ob_low: number;
+  midpoint: number;
+  ote_high: number;
+  ote_low: number;
+  impulse_pct: number;
+}
+
+export interface SmcLiquidity {
+  level: number;
+  touches: number;
+  type: "equal_high" | "equal_low";
+  label: string;
+}
+
+export interface SmcScanItem {
+  symbol: string;
+  price: number;
+  change_24h: number;
+  kategori: "GAINER" | "LOSER";
+  bias: "BULLISH" | "BEARISH" | "NETRAL";
+  entry_quality: "OPTIMAL" | "VALID" | "WAIT";
+  in_bull_ob: boolean;
+  in_bull_ote: boolean;
+  nearest_bull_ob: SmcOB | null;
+  nearest_bear_ob: SmcOB | null;
+  dist_bull_ob: number;
+  fvg_count: number;
+  liquidity_above: SmcLiquidity | null;
+  rsi: number;
+  ema_bull: boolean;
+  vol_spike: boolean;
+  conf_score: number;
+}
+
+export interface SmcScanData {
+  results: SmcScanItem[];
+  timeframe: string;
+  total_scan: number;
+  setup_found: number;
+}
+
+export interface SmcAnalisa {
+  symbol: string;
+  price: number;
+  bias: "BULLISH" | "BEARISH" | "NETRAL";
+  entry_quality: "OPTIMAL" | "VALID" | "WAIT";
+  in_bull_ob: boolean;
+  in_bull_ote: boolean;
+  in_bear_ob: boolean;
+  in_bear_ote: boolean;
+  nearest_bull_ob: SmcOB | null;
+  nearest_bear_ob: SmcOB | null;
+  bullish_obs: SmcOB[];
+  bearish_obs: SmcOB[];
+  bullish_fvgs: unknown[];
+  bearish_fvgs: unknown[];
+  liquidity_above: SmcLiquidity | null;
+  liquidity_below: SmcLiquidity | null;
+  equal_highs: SmcLiquidity[];
+  equal_lows: SmcLiquidity[];
+}
+
 // ── API Functions ──────────────────────────────────────
 
 export const api = {
@@ -502,6 +568,12 @@ export const api = {
 
   posisilExchange: () =>
     apiFetch<{ exchange: string; positions: ExchangePosition[]; count: number }>("/posisi-exchange"),
+
+  smcScan: (tf: string, minChange: number) =>
+    apiFetch<SmcScanData>(`/smc-scan?tf=${tf}&min_change=${minChange}`),
+
+  smcAnalisa: (symbol: string, tf: string) =>
+    apiFetch<SmcAnalisa>(`/smc/${encodeSymbol(symbol)}/${tf}`),
 };
 
 export default api;
