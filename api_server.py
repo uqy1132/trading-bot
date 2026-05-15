@@ -24,9 +24,97 @@ from contextlib import asynccontextmanager
 import traceback, os, threading, time
 
 
+_smc_last_run = 0.0
+
+
+def _smc_auto_execute():
+    """
+    Scan SMC setiap 15 menit → eksekusi virtual order untuk setup OTE/VALID.
+    Dedup: skip symbol yang sudah punya posisi OPEN.
+    """
+    global _smc_last_run
+    try:
+        from data.crypto_data import get_all_tickers, get_ohlcv
+        from strategies.smc import analisa_smc
+        from execution.order_manager import kirim_order_virtual, load_virtual_positions
+        from risk import hitung_ukuran_posisi
+
+        open_positions = load_virtual_positions()
+        open_symbols = {p["symbol"] for p in open_positions if p.get("status") == "OPEN"}
+
+        all_tickers = get_all_tickers()
+        gainers  = [t for t in all_tickers if t["change_24h"] >= 3][:25]
+        losers   = [t for t in reversed(all_tickers) if t["change_24h"] <= -3][:25]
+        executed = 0
+
+        for ticker in gainers + losers:
+            symbol = ticker["symbol"]
+            if symbol in open_symbols:
+                continue
+            try:
+                df = get_ohlcv(symbol, "15m", 200)
+                if df is None or len(df) < 60:
+                    continue
+
+                smc = analisa_smc(df, symbol=symbol)
+                quality = smc.get("entry_quality", "WAIT")
+                if quality not in ("OPTIMAL", "VALID"):
+                    continue
+
+                near_bull = smc.get("nearest_bull_ob")
+                if not near_bull:
+                    continue
+
+                price     = smc["price"]
+                dist_bull = abs(price - near_bull["ob_high"]) / price * 100
+                if dist_bull > 3.0:
+                    continue
+
+                close  = df["close"]
+                delta  = close.diff()
+                gain   = delta.clip(lower=0).rolling(14).mean()
+                loss   = (-delta.clip(upper=0)).rolling(14).mean()
+                rsi    = float(100 - 100 / (1 + gain / (loss + 1e-8)).iloc[-1])
+                ema20  = float(close.ewm(span=20).mean().iloc[-1])
+                ema50  = float(close.ewm(span=50).mean().iloc[-1])
+
+                conf = 0
+                if smc["in_bull_ote"]:  conf += 3
+                elif smc["in_bull_ob"]: conf += 2
+                if rsi < 45:            conf += 1
+                if ema20 > ema50:       conf += 1
+                if conf < 3:
+                    continue
+
+                entry = near_bull["midpoint"]
+                sl    = near_bull["ob_low"]
+                risk  = entry - sl
+                if risk <= 0:
+                    continue
+                tp1   = entry + risk * 3
+
+                sizing = hitung_ukuran_posisi(entry, sl, leverage=2)
+                ukuran = sizing.get("ukuran", 0)
+                if ukuran <= 0:
+                    continue
+
+                result = kirim_order_virtual(symbol, "BUY", ukuran, entry, sl, tp1, leverage=2)
+                if result.get("status") != "ERROR":
+                    executed += 1
+                    open_symbols.add(symbol)
+                    print(f"[smc-auto] ✅ {symbol} | {quality} conf={conf} | entry={entry:.5g}")
+            except Exception as ex:
+                print(f"[smc-auto] skip {symbol}: {ex}")
+
+        if executed:
+            print(f"[smc-auto] Total eksekusi: {executed} posisi")
+    except Exception as e:
+        print(f"[smc-auto] Error: {e}")
+
+
 def _scheduler_loop():
-    """Background thread — jalankan auto-update TP/SL setiap jam."""
-    time.sleep(60)  # tunggu 1 menit setelah startup baru mulai
+    """Background thread — update posisi virtual & auto-execute SMC setiap 15 menit."""
+    time.sleep(60)
     while True:
         try:
             from execution.order_manager import update_virtual_positions
@@ -38,7 +126,10 @@ def _scheduler_loop():
             update_paper_positions()
         except Exception as e:
             print(f"[scheduler] paper positions: {e}")
-        time.sleep(3600)  # interval 1 jam
+
+        _smc_auto_execute()
+
+        time.sleep(900)  # interval 15 menit
 
 
 @asynccontextmanager
@@ -116,8 +207,13 @@ except Exception as e:
     RISK_PER_TRADE  = 0.015
     MAX_DD_HARIAN   = 0.03
     MAX_DD_TOTAL    = 0.15
-    CRYPTO_WATCHLIST = ["BTC/USDT","ETH/USDT","SOL/USDT",
-                        "XRP/USDT","AVAX/USDT","BNB/USDT"]
+    CRYPTO_WATCHLIST = [
+        "BTC/USDT",  "ETH/USDT",  "SOL/USDT",  "XRP/USDT",
+        "BNB/USDT",  "AVAX/USDT", "LINK/USDT", "ADA/USDT",
+        "DOT/USDT",  "NEAR/USDT", "APT/USDT",  "OP/USDT",
+        "ARB/USDT",  "SUI/USDT",  "TRX/USDT",  "TON/USDT",
+        "DOGE/USDT", "PEPE/USDT",
+    ]
 
 # ════════════════════════════════════════════════════════
 # MODELS
@@ -186,26 +282,6 @@ class PairsRequest(BaseModel):
 def health():
     return {"status": "ok", "bot_ready": BOT_READY,
             "modal": MODAL_TOTAL, "watchlist": CRYPTO_WATCHLIST}
-
-@app.get("/api/debug-tickers")
-def debug_tickers():
-    try:
-        from data.crypto_data import get_exchange
-        ex = get_exchange()
-        if not ex.markets:
-            ex.load_markets()
-        swap_syms = [m["symbol"] for m in ex.markets.values()
-                     if m.get("type") == "swap" and m.get("quote") == "USDT"]
-        sample = swap_syms[:5]
-        tickers = ex.fetch_tickers(sample) if sample else {}
-        return {
-            "total_swap_usdt": len(swap_syms),
-            "sample_symbols": sample,
-            "sample_tickers": {k: {"last": v.get("last"), "percentage": v.get("percentage"), "quoteVolume": v.get("quoteVolume")} for k, v in tickers.items()}
-        }
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return {"error": str(e)}
 
 # ════════════════════════════════════════════════════════
 # MARKET CONTEXT
@@ -761,7 +837,6 @@ def smc_analysis(symbol: str, timeframe: str = "1h"):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

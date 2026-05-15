@@ -1,6 +1,6 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { Search, Radio, BookOpen, BarChart3, Calculator, FlaskConical, Sigma, Bot, Settings, ClipboardList, TrendingUp, GitCompare, Wallet, Layers, Crosshair } from "lucide-react";
+import { Search, Radio, BarChart3, Calculator, FlaskConical, Sigma, Bot, Settings, ClipboardList, TrendingUp, GitCompare, Wallet, Layers, Crosshair } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Analisa & Sinyal", icon: Search },
@@ -10,7 +10,6 @@ const NAV = [
   { to: "/pairs", label: "Pairs Trading", icon: GitCompare },
   { to: "/wallet", label: "Wallet & Posisi", icon: Wallet },
   { to: "/virtual", label: "Virtual Positions", icon: Layers },
-  { to: "/journal", label: "Jurnal Trade", icon: BookOpen },
   { to: "/performance", label: "Performa", icon: BarChart3 },
   { to: "/calculator", label: "Kalkulator", icon: Calculator },
   { to: "/backtest", label: "Backtest", icon: FlaskConical },

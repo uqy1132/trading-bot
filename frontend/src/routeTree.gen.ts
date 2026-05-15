@@ -19,7 +19,6 @@ import { Route as PerformanceRouteImport } from './routes/performance'
 import { Route as PaperRouteImport } from './routes/paper'
 import { Route as PairsRouteImport } from './routes/pairs'
 import { Route as MomentumRouteImport } from './routes/momentum'
-import { Route as JournalRouteImport } from './routes/journal'
 import { Route as CalculatorRouteImport } from './routes/calculator'
 import { Route as BacktestRouteImport } from './routes/backtest'
 import { Route as IndexRouteImport } from './routes/index'
@@ -74,11 +73,6 @@ const MomentumRoute = MomentumRouteImport.update({
   path: '/momentum',
   getParentRoute: () => rootRouteImport,
 } as any)
-const JournalRoute = JournalRouteImport.update({
-  id: '/journal',
-  path: '/journal',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const CalculatorRoute = CalculatorRouteImport.update({
   id: '/calculator',
   path: '/calculator',
@@ -99,7 +93,6 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/backtest': typeof BacktestRoute
   '/calculator': typeof CalculatorRoute
-  '/journal': typeof JournalRoute
   '/momentum': typeof MomentumRoute
   '/pairs': typeof PairsRoute
   '/paper': typeof PaperRoute
@@ -115,7 +108,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/backtest': typeof BacktestRoute
   '/calculator': typeof CalculatorRoute
-  '/journal': typeof JournalRoute
   '/momentum': typeof MomentumRoute
   '/pairs': typeof PairsRoute
   '/paper': typeof PaperRoute
@@ -132,7 +124,6 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/backtest': typeof BacktestRoute
   '/calculator': typeof CalculatorRoute
-  '/journal': typeof JournalRoute
   '/momentum': typeof MomentumRoute
   '/pairs': typeof PairsRoute
   '/paper': typeof PaperRoute
@@ -150,7 +141,6 @@ export interface FileRouteTypes {
     | '/'
     | '/backtest'
     | '/calculator'
-    | '/journal'
     | '/momentum'
     | '/pairs'
     | '/paper'
@@ -166,7 +156,6 @@ export interface FileRouteTypes {
     | '/'
     | '/backtest'
     | '/calculator'
-    | '/journal'
     | '/momentum'
     | '/pairs'
     | '/paper'
@@ -182,7 +171,6 @@ export interface FileRouteTypes {
     | '/'
     | '/backtest'
     | '/calculator'
-    | '/journal'
     | '/momentum'
     | '/pairs'
     | '/paper'
@@ -199,7 +187,6 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BacktestRoute: typeof BacktestRoute
   CalculatorRoute: typeof CalculatorRoute
-  JournalRoute: typeof JournalRoute
   MomentumRoute: typeof MomentumRoute
   PairsRoute: typeof PairsRoute
   PaperRoute: typeof PaperRoute
@@ -284,13 +271,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MomentumRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/journal': {
-      id: '/journal'
-      path: '/journal'
-      fullPath: '/journal'
-      preLoaderRoute: typeof JournalRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/calculator': {
       id: '/calculator'
       path: '/calculator'
@@ -319,7 +299,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BacktestRoute: BacktestRoute,
   CalculatorRoute: CalculatorRoute,
-  JournalRoute: JournalRoute,
   MomentumRoute: MomentumRoute,
   PairsRoute: PairsRoute,
   PaperRoute: PaperRoute,
