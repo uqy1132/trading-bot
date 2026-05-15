@@ -97,7 +97,7 @@ def get_ticker(symbol: str) -> dict:
     }
 
 
-def get_all_tickers(min_volume_usdt: float = 1_000_000) -> list:
+def get_all_tickers() -> list:
     """Fetch semua perpetual swap USDT, filter by volume."""
     import urllib3; urllib3.disable_warnings()
     exchange = get_exchange()
@@ -121,11 +121,11 @@ def get_all_tickers(min_volume_usdt: float = 1_000_000) -> list:
 
     result = []
     for sym, t in tickers.items():
-        vol    = t.get("quoteVolume") or 0
         change = t.get("percentage") or 0
         last   = t.get("last") or 0
-        if vol < min_volume_usdt or last == 0:
+        if last == 0:
             continue
+        vol = t.get("quoteVolume") or t.get("baseVolume") or 0
         clean = sym.replace(":USDT", "")
         result.append({
             "symbol"    : clean,
