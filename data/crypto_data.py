@@ -97,21 +97,36 @@ def get_ticker(symbol: str) -> dict:
     }
 
 
-def get_all_tickers(min_volume_usdt: float = 2_000_000) -> list:
-    """Fetch semua perpetual swap USDT dari OKX, filter by volume."""
+def get_all_tickers(min_volume_usdt: float = 1_000_000) -> list:
+    """Fetch semua perpetual swap USDT, filter by volume."""
     import urllib3; urllib3.disable_warnings()
     exchange = get_exchange()
-    tickers  = exchange.fetch_tickers()
-    result   = []
+
+    # Load markets agar symbol list tersedia
+    if not exchange.markets:
+        exchange.load_markets()
+
+    # Ambil simbol swap USDT yang aktif
+    swap_symbols = [
+        m["symbol"] for m in exchange.markets.values()
+        if m.get("type") == "swap"
+        and m.get("quote") == "USDT"
+        and m.get("active", True)
+    ]
+
+    if not swap_symbols:
+        return []
+
+    tickers = exchange.fetch_tickers(swap_symbols)
+
+    result = []
     for sym, t in tickers.items():
-        if not sym.endswith("/USDT:USDT"):
-            continue
         vol    = t.get("quoteVolume") or 0
         change = t.get("percentage") or 0
         last   = t.get("last") or 0
         if vol < min_volume_usdt or last == 0:
             continue
-        clean = sym.replace(":USDT", "")   # BTC/USDT:USDT → BTC/USDT
+        clean = sym.replace(":USDT", "")
         result.append({
             "symbol"    : clean,
             "price"     : last,
