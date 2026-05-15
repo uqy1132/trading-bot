@@ -20,9 +20,36 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import traceback, os
+from contextlib import asynccontextmanager
+import traceback, os, threading, time
 
-app = FastAPI(title="Trading Bot API", version="1.0.0")
+
+def _scheduler_loop():
+    """Background thread — jalankan auto-update TP/SL setiap jam."""
+    time.sleep(60)  # tunggu 1 menit setelah startup baru mulai
+    while True:
+        try:
+            from execution.order_manager import update_virtual_positions
+            update_virtual_positions()
+        except Exception as e:
+            print(f"[scheduler] virtual positions: {e}")
+        try:
+            from paper_trading.tracker import update_paper_positions
+            update_paper_positions()
+        except Exception as e:
+            print(f"[scheduler] paper positions: {e}")
+        time.sleep(3600)  # interval 1 jam
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    t = threading.Thread(target=_scheduler_loop, daemon=True, name="scheduler")
+    t.start()
+    print("[startup] Scheduler thread berjalan.")
+    yield
+
+
+app = FastAPI(title="Trading Bot API", version="1.0.0", lifespan=lifespan)
 
 # CORS — izinkan semua origin (localhost + public URL via tunnel)
 app.add_middleware(
