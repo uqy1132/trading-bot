@@ -1,5 +1,5 @@
-import sys
-sys.path.append("C:\\TradingBot")
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -87,8 +87,11 @@ def deteksi_regime_hmm(df: pd.DataFrame) -> dict:
 
     vol_ratio = round(vol_20 / vol_50, 2) if vol_50 > 0 else 1.0
 
+    prob_bull = 0.75 if regime == "BULL" else 0.25 if regime == "BEAR" else 0.50
+
     return {
         "regime"      : regime,
+        "prob_bull"   : prob_bull,
         "hurst"       : round(hurst, 3),
         "vol_kini"    : round(vol_20, 2),
         "vol_ratio"   : vol_ratio,
@@ -144,11 +147,19 @@ def multi_factor_score(df: pd.DataFrame) -> dict:
     if vol < 3:        skor += 1
     if trend_str > 2:  skor += 1
 
+    if skor >= 3:
+        keputusan = "LAYAK TRADE"
+    elif skor == 2:
+        keputusan = "NETRAL"
+    else:
+        keputusan = "HINDARI"
+
     return {
-        "momentum_14d": round(momentum, 2),
-        "volatilitas" : round(vol, 2),
+        "momentum_14d"  : round(momentum, 2),
+        "volatilitas"   : round(vol, 2),
         "trend_strength": round(trend_str, 2),
-        "skor_total"  : skor
+        "skor_total"    : skor,
+        "keputusan"     : keputusan,
     }
 
 # ── Quant Analisis Lengkap ────────────────────────────
@@ -295,3 +306,12 @@ def kelly_sizing(win_rate: float, avg_win: float, avg_loss: float,
         "kelly_final": kelly_final,
         "rekomendasi": f"Pakai {kelly_final}% modal per trade (Half Kelly untuk keamanan)"
     }
+    
+# ── Alias untuk kompatibilitas dengan api_server.py ──
+def sinyal_kalman_pairs(df1, df2, sym1, sym2):
+    """Alias ke sinyal_pairs yang sudah ada."""
+    return sinyal_pairs(df1, df2, sym1, sym2)
+
+def kalman_pairs_series(df1, df2):
+    """Alias ke hitung_spread_zscore."""
+    return hitung_spread_zscore(df1, df2)

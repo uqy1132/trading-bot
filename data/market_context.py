@@ -1,6 +1,6 @@
 import requests
-import sys
-sys.path.append("C:\\TradingBot")
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.crypto_data import get_ohlcv
 from strategies.indicators import hitung_semua_indikator
 
@@ -61,17 +61,17 @@ def get_btc_context() -> dict:
         }
 
 def get_funding_rate(symbol: str = "BTC/USDT") -> dict:
-    """Ambil funding rate dari Bybit"""
+    """Ambil funding rate dari Binance USDT-M Futures"""
     import ssl
     ssl._create_default_https_context = ssl._create_unverified_context
     try:
-        sym = symbol.replace("/", "")
+        sym = symbol.replace("/", "").replace(":USDT", "")  # → BTCUSDT
         r = requests.get(
-            f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={sym}",
+            f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={sym}",
             timeout=5, verify=False
         )
-        data = r.json()["result"]["list"][0]
-        fr = float(data["fundingRate"]) * 100
+        data = r.json()
+        fr = float(data["lastFundingRate"]) * 100
         return {
             "symbol": symbol,
             "funding_rate": round(fr, 4),
@@ -126,15 +126,3 @@ def get_full_market_context() -> dict:
         "warnings": warnings
     }
 
-def get_fear_greed() -> dict:
-    try:
-        r = requests.get("https://api.alternative.me/fng/?limit=1", 
-                        timeout=5, verify=False)
-        data = r.json()["data"][0]
-        return {
-            "value": int(data["value"]),
-            "label": data["value_classification"],
-            "status": "OK"
-        }
-    except Exception as e:
-        return {"value": 50, "label": "Unknown", "status": f"Error: {e}"}

@@ -1,10 +1,12 @@
-import sys
-sys.path.append("C:\\TradingBot")
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import os
 from datetime import datetime, date, timedelta
 import numpy as np
+from data.crypto_data import get_ticker
+from notifications.discord_alert import kirim_discord
 
 PAPER_FILE    = "logs/paper_trading.json"
 PAPER_CONFIG  = "logs/paper_config.json"
@@ -220,51 +222,44 @@ def statistik_paper() -> dict:
         "evaluasi"       : []
     }
 
-def tutup_paper_trade(trade_id, harga_keluar, hasil):
-    from execution.order_manager import hitung_pnl_bersih
 
+def update_paper_positions() -> list:
+    """
+    Auto-close paper trades yang kena SL atau TP berdasarkan harga live.
+    Dipanggil oleh scheduler setiap siklus.
+    """
     trades = load_paper_trades()
-    config = load_paper_config()
+    closed_now = []
 
     for t in trades:
-        if t["id"] == trade_id and t["status"] == "OPEN":
-            # Hitung PnL bersih dengan fee
-            pnl_detail = hitung_pnl_bersih(
-                aksi     = t["aksi"],
-                entry    = t["fill_price"],
-                keluar   = harga_keluar,
-                ukuran   = t["ukuran"],
-                leverage = t["leverage"]
-            )
+        if t["status"] != "OPEN":
+            continue
+        try:
+            ticker = get_ticker(t["symbol"])
+            harga  = float(ticker["harga"])
 
-            pnl_idr = pnl_detail["pnl_bersih"] * KURS
-            pnl_pct = (pnl_idr / config["modal_sim"]) * 100
+            aksi    = t["aksi"]
+            hit_sl  = harga <= t["stop_loss"]  if aksi in ("BUY", "LONG")  else harga >= t["stop_loss"]
+            hit_tp  = harga >= t["target_1"]   if aksi in ("BUY", "LONG")  else harga <= t["target_1"]
 
-            masuk = datetime.strptime(t["tanggal"], "%Y-%m-%d %H:%M")
-            durasi = round((datetime.now() - masuk).total_seconds() / 3600, 1)
+            if hit_tp or hit_sl:
+                hasil = "WIN" if hit_tp else "LOSS"
+                tutup = tutup_paper_trade(t["id"], harga, hasil)
+                emoji = "🟢" if hit_tp else "🔴"
+                pnl   = tutup.get("pnl_idr", 0)
+                kirim_discord(
+                    f"{emoji} **PAPER TRADE CLOSED**\n"
+                    f"**{t['symbol']}** {aksi}\n"
+                    f"Hasil: **{hasil}** | Harga: `${harga:,.4f}`\n"
+                    f"PnL: `{'+'  if pnl > 0 else ''}{pnl:,.0f} IDR`"
+                )
+                closed_now.append(tutup)
 
-            t.update({
-                "status"       : "CLOSED",
-                "hasil"        : hasil,
-                "harga_keluar" : harga_keluar,
-                "pnl_kotor"    : pnl_detail["pnl_kotor"],
-                "total_fee"    : pnl_detail["total_fee"],
-                "pnl_bersih"   : pnl_detail["pnl_bersih"],
-                "pnl_idr"      : round(pnl_idr, 0),
-                "pnl_pct_modal": round(pnl_pct, 2),
-                "tanggal_tutup": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "durasi_jam"   : durasi
-            })
+        except Exception as e:
+            print(f"[paper] Error update {t['symbol']}: {e}")
 
-            config["modal_sim"] = round(config["modal_sim"] + pnl_idr, 0)
-            break
+    return closed_now
 
-    with open(PAPER_FILE, "w") as f:
-        json.dump(trades, f, indent=2, ensure_ascii=False)
-    with open(PAPER_CONFIG, "w") as f:
-        json.dump(config, f, indent=2)
-
-    return t
 
 def laporan_mingguan() -> dict:
     """Buat laporan evaluasi mingguan."""

@@ -8,30 +8,26 @@ SYSTEM_PROMPT = """Kamu adalah Trading AI Agent spesialis Swing Trading Crypto.
 Fokus: setup berkualitas tinggi, bukan kuantitas trade.
 Target: 4-5% per bulan, max drawdown 10%.
 
-Tugasmu BUKAN mengulang analisa — scoring system sudah menentukan arah.
+Scoring system dan sistem algoritmik sudah menentukan arah dan level harga.
 Tugasmu adalah:
-1. Tentukan entry yang presisi (bukan asal harga sekarang)
-2. Hitung stop loss yang logis (di bawah support / swing low)
-3. Hitung 2 target profit dengan R:R minimal 1:2
-4. Berikan keyakinan 1-10 berdasarkan kualitas setup
+1. Konfirmasi apakah setup layak berdasarkan data yang diberikan
+2. Berikan keyakinan 1-10 berdasarkan kualitas setup
+3. Berikan alasan singkat dalam 2 kalimat mengapa setup ini bagus/buruk
+4. Tentukan risiko: LOW/MEDIUM/HIGH
 
-Aturan ketat:
+ATURAN WAJIB — TIDAK BOLEH DILANGGAR:
+- Keputusanmu HARUS SESUAI dengan SINYAL TEKNIKAL yang diberikan
+  * Sinyal SELL/OVERBOUGHT → keputusan SELL atau SHORT, BUKAN BUY
+  * Sinyal BUY/OVERSOLD   → keputusan BUY, BUKAN SELL
+  * Sinyal HOLD           → keputusan HOLD
 - Kalau grade C atau D → keputusan HOLD, keyakinan max 4
-- Kalau grade A atau B → tentukan entry/SL/TP yang presisi
-- R:R minimal 1:2, idealnya 1:3
-- Stop loss harus di level yang logis, bukan asal -1%
+- Entry, SL, dan TP dihitung otomatis oleh sistem — JANGAN output angka harga
 
 Respons WAJIB JSON murni tanpa markdown:
 {
   "keputusan": "BUY/SELL/SHORT/HOLD",
   "keyakinan": 1-10,
-  "entry": harga,
-  "stop_loss": harga,
-  "target_1": harga,
-  "target_2": harga,
-  "rr_ratio": angka,
-  "ukuran_posisi_pct": persen modal max 10,
-  "alasan": "max 2 kalimat fokus ke setup",
+  "alasan": "max 2 kalimat fokus ke kualitas setup",
   "risiko": "LOW/MEDIUM/HIGH"
 }"""
 
@@ -105,20 +101,25 @@ def analisa_dengan_groq(data_pasar: dict, scoring: dict = None, market_context: 
             f"\n- Detail skor: {json.dumps(scoring['detail'], ensure_ascii=False)}"
         )
 
+    konsensus = data_pasar.get("konsensus", "HOLD / TUNGGU")
+
     prompt = f"""
 Setup swing trading untuk dikonfirmasi:
 
 Aset: {data_pasar['symbol']}
 Harga sekarang: {data_pasar['harga']}
 RSI: {data_pasar['rsi']} | ADX: {data_pasar['adx']} | ATR: {data_pasar['atr']}
+
+⚠️ SINYAL TEKNIKAL (WAJIB IKUTI): {konsensus}
+Keputusanmu HARUS sesuai sinyal di atas. Jika SELL/OVERBOUGHT → jangan BUY.
 {scoring_txt}
 {konteks_pasar}
 
 Riwayat bot: {konteks_jurnal}
 Modal: Rp {MODAL_TOTAL:,} | Risk per trade: {RISK_PER_TRADE*100}%
 
-Tentukan entry presisi, SL di level support logis, dan 2 target dengan R:R minimal 1:2.
-Kalau grade C/D → HOLD.
+Evaluasi kualitas setup dan berikan keputusan. Entry/SL/TP dihitung otomatis oleh sistem.
+Kalau grade C/D → HOLD. Ikuti arah sinyal teknikal.
 """
 
     response = client.chat.completions.create(

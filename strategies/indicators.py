@@ -19,11 +19,8 @@ def hitung_semua_indikator(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_sma20"]   = df["volume"].rolling(20).mean()
     df["vol_ratio"]   = df["volume"] / df["vol_sma20"]
     
-    print(f"Sebelum dropna: {len(df)} baris")
     kolom_penting = ["ema_20", "ema_50", "rsi", "adx", "bb_upper", "bb_lower", "atr", "vol_ratio"]
     df = df.dropna(subset=kolom_penting)
-    print(f"Setelah dropna: {len(df)} baris")
-    
     return df
 
 
@@ -197,7 +194,57 @@ def deteksi_market_structure(df: pd.DataFrame) -> dict:
         "last_swing_low": round(swing_lows[-1], 4)
     }
     
-def hitung_skor_sinyal(df: pd.DataFrame, symbol: str, market_context: dict = None) -> dict:
+def hitung_entry_sl_tp(df: pd.DataFrame, sinyal: str,
+                       rr1: float = 1.5, rr2: float = 2.5) -> dict:
+    """
+    Hitung entry, SL, TP secara algoritmik dari swing high/low + ATR.
+    Deterministik — tidak bergantung pada LLM untuk angka harga.
+    """
+    df = hitung_semua_indikator(df)
+    if len(df) < 3:
+        return {"entry": 0, "sl": 0, "tp1": 0, "tp2": 0, "jarak_pct": 0, "rr": 0, "atr": 0}
+
+    baris  = df.iloc[-1]
+    entry  = float(baris["close"])
+    atr    = float(baris["atr"]) if baris["atr"] > 0 else entry * 0.01
+    upper  = sinyal.upper()
+    is_buy  = any(k in upper for k in ("BUY", "LONG"))
+    is_sell = any(k in upper for k in ("SELL", "SHORT"))
+
+    if not is_buy and not is_sell:
+        return {"entry": round(entry, 6), "sl": 0, "tp1": 0, "tp2": 0,
+                "jarak_pct": 0, "rr": 0, "atr": round(atr, 6)}
+
+    if is_buy:
+        swing_low = float(df["low"].tail(20).min())
+        sl = max(swing_low - 0.3 * atr, entry * 0.95)   # cap 5% below
+        sl = min(sl, entry - 0.5 * atr)                  # at least 0.5 ATR below
+        jarak = entry - sl
+        tp1 = entry + jarak * rr1
+        tp2 = entry + jarak * rr2
+    else:
+        swing_high = float(df["high"].tail(20).max())
+        sl = min(swing_high + 0.3 * atr, entry * 1.05)   # cap 5% above
+        sl = max(sl, entry + 0.5 * atr)                   # at least 0.5 ATR above
+        jarak = sl - entry
+        tp1 = entry - jarak * rr1
+        tp2 = entry - jarak * rr2
+
+    jarak_pct = (jarak / entry) * 100 if entry > 0 else 0
+
+    return {
+        "entry"     : round(entry, 6),
+        "sl"        : round(sl, 6),
+        "tp1"       : round(tp1, 6),
+        "tp2"       : round(tp2, 6),
+        "jarak_pct" : round(jarak_pct, 2),
+        "rr"        : round(rr2, 1),
+        "atr"       : round(atr, 6),
+    }
+
+
+def hitung_skor_sinyal(df: pd.DataFrame, symbol: str,
+                       market_context: dict = None, mtf_data: dict = None) -> dict:
     """
     Scoring system — setiap sinyal punya bobot.
     Total skor menentukan kualitas setup SEBELUM tanya AI.
@@ -234,15 +281,32 @@ def hitung_skor_sinyal(df: pd.DataFrame, symbol: str, market_context: dict = Non
     else:
         detail["ema_alignment"] = "0 (EMA tidak aligned)"
 
-    # ── 3. ADX — kekuatan tren ────────────────────────
-    if baris["adx"] > 30:
-        skor += 2
-        detail["adx"] = f"+2 (ADX {baris['adx']:.1f} — tren sangat kuat)"
-    elif baris["adx"] > 20:
-        skor += 1
-        detail["adx"] = f"+1 (ADX {baris['adx']:.1f} — tren cukup)"
+    # ── 3. ADX — kekuatan tren (direction-aware) ─────
+    adx_val  = baris["adx"]
+    ema_bull = baris["close"] > baris["ema_20"] > baris["ema_50"]
+    ema_bear = baris["close"] < baris["ema_20"] < baris["ema_50"]
+
+    if adx_val > 30:
+        if ema_bull:
+            skor += 2
+            detail["adx"] = f"+2 (ADX {adx_val:.1f} — uptrend sangat kuat)"
+        elif ema_bear:
+            skor -= 2
+            detail["adx"] = f"-2 (ADX {adx_val:.1f} — downtrend kuat, hindari long)"
+        else:
+            skor += 1
+            detail["adx"] = f"+1 (ADX {adx_val:.1f} — tren kuat, arah belum jelas)"
+    elif adx_val > 20:
+        if ema_bull:
+            skor += 1
+            detail["adx"] = f"+1 (ADX {adx_val:.1f} — uptrend cukup)"
+        elif ema_bear:
+            skor -= 1
+            detail["adx"] = f"-1 (ADX {adx_val:.1f} — downtrend sedang)"
+        else:
+            detail["adx"] = f"0 (ADX {adx_val:.1f} — tren lemah/sideways)"
     else:
-        detail["adx"] = f"0 (ADX {baris['adx']:.1f} — tren lemah)"
+        detail["adx"] = f"0 (ADX {adx_val:.1f} — tidak ada tren)"
 
     # ── 4. RSI — momentum ────────────────────────────
     if 45 <= baris["rsi"] <= 60:
@@ -257,7 +321,28 @@ def hitung_skor_sinyal(df: pd.DataFrame, symbol: str, market_context: dict = Non
     else:
         detail["rsi"] = f"0 (RSI {baris['rsi']:.1f} — netral)"
 
-    # ── 5. Volume konfirmasi ──────────────────────────
+    # ── 5. MACD ───────────────────────────────────────
+    macd_v    = baris.get("macd", 0) or 0
+    macd_s    = baris.get("macd_signal", 0) or 0
+    macd_h    = baris.get("macd_hist", 0) or 0
+    macd_h_p  = baris_prev.get("macd_hist", 0) or 0
+
+    if macd_v > macd_s and macd_h > 0 and macd_h > macd_h_p:
+        skor += 2
+        detail["macd"] = f"+2 (MACD bullish crossover, histogram naik)"
+    elif macd_v > macd_s and macd_h > 0:
+        skor += 1
+        detail["macd"] = f"+1 (MACD di atas signal line)"
+    elif macd_v < macd_s and macd_h < 0 and macd_h < macd_h_p:
+        skor -= 2
+        detail["macd"] = f"-2 (MACD bearish crossover, histogram turun)"
+    elif macd_v < macd_s:
+        skor -= 1
+        detail["macd"] = f"-1 (MACD di bawah signal line)"
+    else:
+        detail["macd"] = f"0 (MACD netral)"
+
+    # ── 6. Volume konfirmasi ──────────────────────────
     if baris["vol_ratio"] > 1.5:
         skor += 2
         detail["volume"] = f"+2 (Volume {baris['vol_ratio']:.1f}x rata-rata — konfirmasi kuat)"
@@ -282,6 +367,23 @@ def hitung_skor_sinyal(df: pd.DataFrame, symbol: str, market_context: dict = Non
         detail["bollinger"] = f"-1 (Harga di upper BB — risiko reversal)"
     else:
         detail["bollinger"] = f"0 (Posisi BB netral)"
+
+    # ── 8. Open Interest (opsional, kalau tersedia) ───
+    oi_data = market_context.get("open_interest", {}) if market_context else {}
+    oi_trend = oi_data.get("trend", "UNKNOWN") if oi_data else "UNKNOWN"
+    oi_change = oi_data.get("change_pct", 0) if oi_data else 0
+
+    if oi_trend == "RISING" and oi_change > 3:
+        skor += 2
+        detail["open_interest"] = f"+2 (OI naik {oi_change:.1f}% — posisi baru masuk, trend kuat)"
+    elif oi_trend == "RISING":
+        skor += 1
+        detail["open_interest"] = f"+1 (OI naik {oi_change:.1f}% — konfirmasi trend)"
+    elif oi_trend == "FALLING" and oi_change < -3:
+        skor -= 1
+        detail["open_interest"] = f"-1 (OI turun {oi_change:.1f}% — posisi ditutup, trend melemah)"
+    elif oi_trend != "UNKNOWN":
+        detail["open_interest"] = f"0 (OI stabil)"
 
     # ── 7. Konteks pasar (BTC + F&G + Funding) ───────
     if market_context:
@@ -319,8 +421,24 @@ def hitung_skor_sinyal(df: pd.DataFrame, symbol: str, market_context: dict = Non
         else:
             detail["funding_rate"] = "0 (Funding normal)"
 
+    # ── Multi-Timeframe konfirmasi ────────────────────
+    if mtf_data:
+        konfirmasi = mtf_data.get("konfirmasi", "NO SIGNAL")
+        kekuatan   = mtf_data.get("kekuatan", "LEMAH")
+        if konfirmasi == "BUY CONFIRMED":
+            pts = 3 if kekuatan == "KUAT" else 2
+            skor += pts
+            detail["mtf"] = f"+{pts} (MTF BUY CONFIRMED — {kekuatan})"
+        elif konfirmasi == "SELL CONFIRMED":
+            pts = 3 if kekuatan == "KUAT" else 2
+            skor -= pts
+            detail["mtf"] = f"-{pts} (MTF SELL CONFIRMED — {kekuatan})"
+        else:
+            skor -= 1
+            detail["mtf"] = "-1 (MTF: sinyal tidak konsisten antar TF)"
+
     # ── Grade final ───────────────────────────────────
-    skor_max = 17 if market_context else 12
+    skor_max = (21 if market_context else 14) + (3 if mtf_data else 0)
 
     if skor >= 10:
         grade = "A — STRONG BUY"

@@ -1,5 +1,5 @@
-import sys
-sys.path.append("C:\\TradingBot")
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json, os
 from datetime import datetime
@@ -156,40 +156,35 @@ def simpan_virtual_positions(positions: list):
     with open(VIRTUAL_POSITIONS_FILE, "w") as f:
         json.dump(positions, f, indent=2, ensure_ascii=False)
 
-def kirim_order(symbol, aksi, ukuran, entry, sl, tp1, leverage=2) -> dict:
+def kirim_order_virtual(symbol, aksi, ukuran, entry, sl, tp1, leverage=2) -> dict:
     """
     Virtual order — simulasi eksekusi tanpa exchange nyata.
-    Pakai harga real dari market untuk fill price.
+    Digunakan saat LIVE_MODE=false (default).
     """
     try:
-        # Ambil harga real sebagai fill price
         df         = get_ohlcv(symbol, "1h", 2)
         fill_price = float(df["close"].iloc[-1])
 
         # Simulasi slippage 0.05%
-        if aksi in ["BUY", "LONG"]:
-            fill_price = fill_price * 1.0005
-        else:
-            fill_price = fill_price * 0.9995
+        fill_price = fill_price * (1.0005 if aksi in ("BUY", "LONG") else 0.9995)
 
         order_id = f"VIRTUAL_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
         posisi = {
-            "order_id"  : order_id,
-            "symbol"    : symbol,
-            "aksi"      : aksi,
-            "ukuran"    : ukuran,
-            "entry_plan": entry,
-            "fill_price": round(fill_price, 4),
-            "stop_loss" : sl,
+            "order_id"   : order_id,
+            "symbol"     : symbol,
+            "aksi"       : aksi,
+            "ukuran"     : ukuran,
+            "entry_plan" : entry,
+            "fill_price" : round(fill_price, 6),
+            "stop_loss"  : sl,
             "take_profit": tp1,
-            "leverage"  : leverage,
-            "status"    : "OPEN",
-            "waktu"     : datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "pnl_usdt"  : 0
+            "leverage"   : leverage,
+            "status"     : "OPEN",
+            "mode"       : "VIRTUAL",
+            "waktu"      : datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "pnl_usdt"   : 0,
         }
 
-        # Simpan posisi virtual
         positions = load_virtual_positions()
         positions.append(posisi)
         simpan_virtual_positions(positions)
@@ -197,74 +192,155 @@ def kirim_order(symbol, aksi, ukuran, entry, sl, tp1, leverage=2) -> dict:
         slippage = abs(fill_price - entry) / entry * 100
         kirim_discord(
             f"🤖 **VIRTUAL ORDER TEREKSEKUSI**\n"
-            f"**{symbol}** {aksi} {ukuran:.4f} unit\n"
-            f"Fill: `${fill_price:,.4f}` (plan: ${entry:,.4f})\n"
-            f"SL: `${sl:,.4f}` | TP: `${tp1:,.4f}`\n"
+            f"**{symbol}** {aksi} {ukuran:.6f} unit\n"
+            f"Fill: `${fill_price:,.6f}` (plan: `${entry:,.6f}`)\n"
+            f"SL: `${sl:,.6f}` | TP: `${tp1:,.6f}`\n"
             f"Slippage: {slippage:.3f}% | Leverage: {leverage}x\n"
             f"ID: `{order_id}`"
         )
-
         return {"status": "OK", "order_id": order_id,
-                "fill_price": fill_price, "posisi": posisi}
+                "fill_price": fill_price, "posisi": posisi, "mode": "VIRTUAL"}
 
     except Exception as e:
         kirim_discord(f"❌ Virtual order gagal: {symbol} — {e}")
         return {"status": "ERROR", "error": str(e)}
 
-def update_virtual_positions():
+
+def kirim_order_live(symbol, aksi, ukuran, sl, tp1, tp2=None, leverage=2) -> dict:
     """
-    Cek semua posisi virtual — apakah sudah kena SL atau TP.
-    Jalankan ini tiap jam dari scheduler.
+    Eksekusi order NYATA ke exchange via CCXT.
+    Membutuhkan LIVE_MODE=true dan API key terkonfigurasi di config/.env.
+    Alur: set leverage → market order entry → SL order → TP order.
     """
-    positions = load_virtual_positions()
-    if not positions:
-        return []
+    from config.settings import LIVE_MODE
+    if not LIVE_MODE:
+        return {"status": "ERROR",
+                "error": "LIVE_MODE=false — set LIVE_MODE=true di config/.env untuk eksekusi nyata"}
 
-    closed_now = []
+    from data.crypto_data import get_exchange_auth, _fmt_symbol
+    try:
+        ex  = get_exchange_auth()
+    except Exception as e:
+        return {"status": "ERROR", "error": f"Auth gagal: {e}"}
 
-    for pos in positions:
-        if pos["status"] != "OPEN":
-            continue
+    sym        = _fmt_symbol(symbol)
+    side       = "buy" if aksi in ("BUY", "LONG") else "sell"
+    close_side = "sell" if side == "buy" else "buy"
 
+    try:
+        # 1. Set leverage
         try:
-            df    = get_ohlcv(pos["symbol"], "1h", 2)
-            harga = float(df["close"].iloc[-1])
+            ex.set_leverage(leverage, sym)
+        except Exception:
+            pass  # beberapa exchange tidak support atau sudah terset
 
-            hit_sl = False
-            hit_tp = False
+        # 2. Market order entry
+        order      = ex.create_order(sym, "market", side, ukuran)
+        fill_price = float(order.get("average") or order.get("price") or 0)
+        order_id   = order.get("id", "")
 
-            if pos["aksi"] in ["BUY", "LONG"]:
-                hit_sl = harga <= pos["stop_loss"]
-                hit_tp = harga >= pos["take_profit"]
-                pnl    = (harga - pos["fill_price"]) * pos["ukuran"] * pos["leverage"]
-            else:
-                hit_sl = harga >= pos["stop_loss"]
-                hit_tp = harga <= pos["take_profit"]
-                pnl    = (pos["fill_price"] - harga) * pos["ukuran"] * pos["leverage"]
+        sl_placed  = False
+        tp_placed  = False
 
-            if hit_tp or hit_sl:
-                hasil        = "WIN" if hit_tp else "LOSS"
-                pos["status"]= "CLOSED"
-                pos["hasil"] = hasil
-                pos["harga_keluar"]  = harga
-                pos["pnl_usdt"]      = round(pnl, 4)
-                pos["waktu_tutup"]   = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # 3. Stop Loss order (reduceOnly)
+        try:
+            ex.create_order(sym, "stop_market", close_side, ukuran,
+                            params={"stopPrice": sl, "reduceOnly": True})
+            sl_placed = True
+        except Exception as e_sl:
+            print(f"[!] SL order gagal ({symbol}): {e_sl}")
 
-                emoji = "🟢" if hit_tp else "🔴"
-                kirim_discord(
-                    f"{emoji} **VIRTUAL POSITION CLOSED**\n"
-                    f"**{pos['symbol']}** {pos['aksi']}\n"
-                    f"Hasil: **{hasil}** | Harga: `${harga:,.4f}`\n"
-                    f"PnL: `{'+' if pnl > 0 else ''}{pnl:.4f} USDT`\n"
-                    f"ID: `{pos['order_id']}`"
-                )
-                closed_now.append(pos)
+        # 4. Take Profit order (reduceOnly)
+        try:
+            ex.create_order(sym, "take_profit_market", close_side, ukuran,
+                            params={"stopPrice": tp1, "reduceOnly": True})
+            tp_placed = True
+        except Exception as e_tp:
+            print(f"[!] TP order gagal ({symbol}): {e_tp}")
 
-        except Exception as e:
-            print(f"Error update {pos['symbol']}: {e}")
+        # Simpan sebagai virtual position untuk tracking
+        posisi = {
+            "order_id"   : order_id,
+            "symbol"     : symbol,
+            "aksi"       : aksi,
+            "ukuran"     : ukuran,
+            "fill_price" : round(fill_price, 6),
+            "stop_loss"  : sl,
+            "take_profit": tp1,
+            "leverage"   : leverage,
+            "status"     : "OPEN",
+            "mode"       : "LIVE",
+            "waktu"      : datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "pnl_usdt"   : 0,
+            "sl_placed"  : sl_placed,
+            "tp_placed"  : tp_placed,
+        }
+        positions = load_virtual_positions()
+        positions.append(posisi)
+        simpan_virtual_positions(positions)
 
-    simpan_virtual_positions(positions)
-    return closed_now
+        warn = ""
+        if not sl_placed:
+            warn += "\n⚠️ **SL order GAGAL dipasang — pasang manual segera!**"
+        if not tp_placed:
+            warn += "\n⚠️ TP order gagal — keluar manual saat TP tercapai."
+
+        kirim_discord(
+            f"⚡ **LIVE ORDER TEREKSEKUSI**\n"
+            f"**{symbol}** {aksi} {ukuran:.6f} unit\n"
+            f"Fill: `${fill_price:,.6f}` | SL: `${sl}` | TP1: `${tp1}`\n"
+            f"Leverage: {leverage}x | ID: `{order_id}`{warn}",
+            title="⚡ Live Order", color=0xFFAA00
+        )
+        return {"status": "OK", "order_id": order_id, "fill_price": fill_price,
+                "sl_placed": sl_placed, "tp_placed": tp_placed, "mode": "LIVE"}
+
+    except Exception as e:
+        kirim_discord(f"❌ **LIVE ORDER GAGAL**: {symbol} {aksi} — {e}",
+                      title="🚨 Order Error", color=0xFF0000)
+        return {"status": "ERROR", "error": str(e)}
+
+
+def tutup_posisi_live(symbol, aksi, ukuran) -> dict:
+    """
+    Tutup posisi live dengan market order berlawanan (reduceOnly).
+    Juga membatalkan semua order pending (SL/TP) yang masih terbuka.
+    """
+    from config.settings import LIVE_MODE
+    if not LIVE_MODE:
+        return {"status": "ERROR", "error": "LIVE_MODE=false"}
+
+    from data.crypto_data import get_exchange_auth, _fmt_symbol
+    try:
+        ex  = get_exchange_auth()
+    except Exception as e:
+        return {"status": "ERROR", "error": f"Auth gagal: {e}"}
+
+    sym        = _fmt_symbol(symbol)
+    close_side = "sell" if aksi in ("BUY", "LONG") else "buy"
+
+    try:
+        # Batalkan semua order pending dulu
+        try:
+            ex.cancel_all_orders(sym)
+        except Exception:
+            pass
+
+        order      = ex.create_order(sym, "market", close_side, ukuran,
+                                      params={"reduceOnly": True})
+        fill_price = float(order.get("average") or order.get("price") or 0)
+
+        kirim_discord(
+            f"🔒 **POSISI DITUTUP (LIVE)**\n"
+            f"**{symbol}** {aksi} — Exit @ `${fill_price:,.6f}`",
+            title="🔒 Close Position", color=0x888888
+        )
+        return {"status": "OK", "fill_price": fill_price, "order_id": order.get("id", "")}
+
+    except Exception as e:
+        kirim_discord(f"❌ **TUTUP POSISI GAGAL**: {symbol} — {e}",
+                      title="🚨 Close Error", color=0xFF0000)
+        return {"status": "ERROR", "error": str(e)}
 
 def cek_posisi_aktif() -> list:
     positions = load_virtual_positions()

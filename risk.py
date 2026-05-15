@@ -4,8 +4,9 @@ import numpy as np
 from datetime import datetime, date
 from config.settings import MODAL_TOTAL, RISK_PER_TRADE, MAX_DD_HARIAN, MAX_DD_TOTAL
 
-JOURNAL_FILE = "logs/trade_journal.json"
-KURS_DEFAULT = 16_200
+JOURNAL_FILE    = "logs/trade_journal.json"
+KS_OVERRIDE_FILE = "logs/ks_override.json"
+KURS_DEFAULT    = 16_200
 
 def hitung_ukuran_posisi(entry: float, stop_loss: float,
                           modal: float = None, leverage: int = 1,
@@ -102,6 +103,116 @@ def cek_kill_switch(modal_awal: float, modal_sekarang: float) -> dict:
             "pesan": f"Drawdown {drawdown*100:.1f}% — Masih aman.",
             "lanjut": True}
 
+def hitung_ekuitas() -> dict:
+    """
+    Hitung ekuitas saat ini berdasarkan histori PnL di jurnal.
+    Digunakan oleh kill switch untuk tahu apakah sudah melewati batas drawdown.
+    """
+    jurnal = load_jurnal()
+    closed = [t for t in jurnal
+              if t.get("status") == "CLOSED" and t.get("harga_keluar")]
+
+    def pnl_usdt(t) -> float:
+        entry  = float(t.get("entry", 0))
+        hk     = float(t.get("harga_keluar", entry))
+        ukuran = float(t.get("ukuran", 0))
+        aksi   = t.get("aksi", "BUY")
+        if entry <= 0 or ukuran <= 0:
+            return 0.0
+        return (hk - entry) * ukuran if aksi in ("BUY", "LONG") else (entry - hk) * ukuran
+
+    total_pnl_usdt = sum(pnl_usdt(t) for t in closed)
+    modal_sekarang = MODAL_TOTAL + total_pnl_usdt * KURS_DEFAULT
+
+    # Drawdown total
+    dd_total = max(0.0, (MODAL_TOTAL - modal_sekarang) / MODAL_TOTAL * 100) if MODAL_TOTAL > 0 else 0
+
+    # Drawdown hari ini
+    today = str(date.today())
+    closed_today = [t for t in closed if (t.get("tanggal_tutup") or "").startswith(today)]
+    pnl_today    = sum(pnl_usdt(t) for t in closed_today)
+    modal_pagi   = modal_sekarang - pnl_today * KURS_DEFAULT
+    dd_hari      = max(0.0, (modal_pagi - modal_sekarang) / modal_pagi * 100) if modal_pagi > 0 else 0
+
+    return {
+        "modal_awal"    : MODAL_TOTAL,
+        "modal_sekarang": round(modal_sekarang, 0),
+        "dd_total_pct"  : round(dd_total, 2),
+        "dd_hari_pct"   : round(dd_hari, 2),
+        "pnl_total_usdt": round(total_pnl_usdt, 4),
+        "pnl_hari_usdt" : round(pnl_today, 4),
+        "jumlah_trade"  : len(closed),
+    }
+
+def set_ks_override(jam: int = 24):
+    """Override kill switch secara manual selama N jam (default 24 jam)."""
+    from datetime import timedelta
+    os.makedirs("logs", exist_ok=True)
+    expires = (datetime.now() + timedelta(hours=jam)).isoformat()
+    with open(KS_OVERRIDE_FILE, "w") as f:
+        json.dump({"expires": expires, "set_at": datetime.now().isoformat()}, f)
+
+def clear_ks_override():
+    if os.path.exists(KS_OVERRIDE_FILE):
+        os.remove(KS_OVERRIDE_FILE)
+
+def cek_ks_override() -> bool:
+    """Return True jika override masih aktif."""
+    if not os.path.exists(KS_OVERRIDE_FILE):
+        return False
+    try:
+        with open(KS_OVERRIDE_FILE) as f:
+            data = json.load(f)
+        if datetime.now() < datetime.fromisoformat(data["expires"]):
+            return True
+    except Exception:
+        pass
+    clear_ks_override()
+    return False
+
+
+def status_kill_switch() -> dict:
+    """
+    Status kill switch berdasarkan ekuitas nyata dari jurnal.
+    Dipanggil sebelum setiap trade baru untuk memblokir jika drawdown melewati batas.
+    """
+    # Cek manual override dulu
+    if cek_ks_override():
+        ekuitas = hitung_ekuitas()
+        with open(KS_OVERRIDE_FILE) as f:
+            ov = json.load(f)
+        return {
+            "status" : "OK",
+            "lanjut" : True,
+            "pesan"  : f"Override aktif hingga {ov['expires'][:16].replace('T',' ')} — gunakan dengan bijak!",
+            **ekuitas,
+        }
+
+    ekuitas  = hitung_ekuitas()
+    dd_total = ekuitas["dd_total_pct"]
+    dd_hari  = ekuitas["dd_hari_pct"]
+
+    if dd_total >= MAX_DD_TOTAL * 100:
+        return {
+            "status" : "STOP",
+            "lanjut" : False,
+            "pesan"  : f"Total drawdown {dd_total:.1f}% melebihi batas {MAX_DD_TOTAL*100:.0f}% — sistem dihentikan!",
+            **ekuitas,
+        }
+    if dd_hari >= MAX_DD_HARIAN * 100:
+        return {
+            "status" : "PAUSE",
+            "lanjut" : False,
+            "pesan"  : f"Loss harian {dd_hari:.1f}% melebihi batas {MAX_DD_HARIAN*100:.0f}% — stop hari ini.",
+            **ekuitas,
+        }
+    return {
+        "status" : "OK",
+        "lanjut" : True,
+        "pesan"  : "Kondisi aman untuk trading.",
+        **ekuitas,
+    }
+
 def load_jurnal() -> list:
     if not os.path.exists(JOURNAL_FILE):
         return []
@@ -126,18 +237,33 @@ def load_jurnal() -> list:
             t["target_1"] = t.get("target", 0)
         if "target_2" not in t:
             t["target_2"] = 0
+        # Normalisasi stop_loss → sl (field lama pakai stop_loss)
+        if "sl" not in t:
+            t["sl"] = t.get("stop_loss", 0) or 0
     return data
 
 def catat_trade(symbol, aksi, entry, sl, target_1, target_2,
                 ukuran, leverage=1, catatan="", kondisi=None) -> dict:
     os.makedirs("logs", exist_ok=True)
     jurnal = load_jurnal()
+
+    # Kill switch — blokir trade baru jika drawdown melewati batas
+    ks = status_kill_switch()
+    if not ks["lanjut"]:
+        return {"error": f"🚫 Kill Switch {ks['status']}: {ks['pesan']}"}
+
+    # Cek duplikat — tolak jika symbol yang sama masih OPEN
+    duplikat = [t for t in jurnal if t["symbol"] == symbol and t["status"] == "OPEN"]
+    if duplikat:
+        d = duplikat[0]
+        return {"error": f"Trade {symbol} sudah ada (ID #{d['id']}, {d['aksi']} @ {d['entry']}). Tutup dulu sebelum buka posisi baru."}
     trade  = {
         "id"            : len(jurnal) + 1,
         "tanggal"       : str(date.today()),
         "symbol"        : symbol,
         "aksi"          : aksi,
         "entry"         : entry,
+        "sl"            : sl,
         "stop_loss"     : sl,
         "target_1"      : target_1,
         "target_2"      : target_2,
@@ -215,11 +341,12 @@ def geser_breakeven(trade_id: int, harga_sekarang: float) -> dict:
     for t in jurnal:
         if t["id"] == trade_id and t["status"] == "OPEN":
             entry    = float(t["entry"])
-            sl       = float(t["stop_loss"])
+            sl       = float(t.get("sl") or t.get("stop_loss", 0))
             jarak_sl = abs(entry - sl)
             profit   = abs(harga_sekarang - entry)
             if profit >= jarak_sl:
                 t["stop_loss"] = entry
+                t["sl"]        = entry
                 t["catatan"]   = t.get("catatan", "") + " | SL → break-even"
                 simpan_jurnal(jurnal)
                 return {"status": "OK", "pesan": f"SL digeser ke {entry}"}
@@ -250,3 +377,31 @@ def simpan_jurnal(jurnal: list):
     os.makedirs("logs", exist_ok=True)
     with open(JOURNAL_FILE, "w") as f:
         json.dump(jurnal, f, indent=2, ensure_ascii=False)
+
+SKIP_FILE = "logs/skipped.json"
+
+def load_skipped() -> list:
+    if not os.path.exists(SKIP_FILE):
+        return []
+    with open(SKIP_FILE) as f:
+        return json.load(f)
+
+def catat_skip(symbol: str, timeframe: str, sinyal: str,
+               grade: str, skor: int, harga: float, alasan: str = "") -> dict:
+    os.makedirs("logs", exist_ok=True)
+    skipped = load_skipped()
+    entry = {
+        "id"       : len(skipped) + 1,
+        "tanggal"  : datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "symbol"   : symbol,
+        "timeframe": timeframe,
+        "sinyal"   : sinyal,
+        "grade"    : grade,
+        "skor"     : skor,
+        "harga"    : harga,
+        "alasan"   : alasan,
+    }
+    skipped.append(entry)
+    with open(SKIP_FILE, "w") as f:
+        json.dump(skipped, f, indent=2, ensure_ascii=False)
+    return entry
