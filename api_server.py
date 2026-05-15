@@ -83,6 +83,7 @@ try:
                                        analisa_multi_timeframe,
                                        hitung_entry_sl_tp)
     from strategies.combined_signal import skor_gabungan
+    from strategies.smc import analisa_smc
     from strategies.quant import (multi_factor_score, deteksi_regime_hmm,
                                   fit_garch, sinyal_kalman,
                                   hitung_momentum_ranking,
@@ -723,6 +724,25 @@ def quant_analisa(symbol: str, timeframe: str):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
+@app.get("/api/smc/{symbol:path}/{timeframe}")
+def smc_analysis(symbol: str, timeframe: str = "1h"):
+    try:
+        tf_map = {"15M": "15m", "30M": "30m", "1H": "1h", "2H": "2h", "4H": "4h", "1D": "1d"}
+        tf = tf_map.get(timeframe.upper(), timeframe.lower())
+        from data.crypto_data import ambil_data_ohlcv
+        df = ambil_data_ohlcv(symbol, tf, limit=200)
+        if df is None or len(df) < 50:
+            raise HTTPException(status_code=400, detail="Data tidak cukup")
+        from strategies.indicators import hitung_semua_indikator
+        df = hitung_semua_indikator(df)
+        result = analisa_smc(df, symbol=symbol)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/momentum")
 def momentum_ranking(tf: str = "4H"):
