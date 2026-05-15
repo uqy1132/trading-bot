@@ -3,7 +3,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 # ── Hurst Exponent ───────────────────────────────────
 def hitung_hurst(series: pd.Series, max_lag: int = 20) -> float:
@@ -232,7 +231,7 @@ def hitung_spread_zscore(df1: pd.DataFrame, df2: pd.DataFrame,
     n  = min(len(p1), len(p2))
     p1, p2 = p1[-n:], p2[-n:]
 
-    slope, intercept, _, _, _ = stats.linregress(p2, p1)
+    slope, intercept = np.polyfit(p2, p1, 1)
     hedge_ratio = round(slope, 4)
     spread      = p1 - hedge_ratio * p2
 
@@ -249,11 +248,11 @@ def hitung_spread_zscore(df1: pd.DataFrame, df2: pd.DataFrame,
 
 def sinyal_pairs(df1, df2, sym1, sym2) -> dict:
     try:
-        from scipy.stats import pearsonr
         n   = min(len(df1), len(df2))
         p1  = df1["close"].values[-n:]
         p2  = df2["close"].values[-n:]
-        cor, pvalue = pearsonr(p1, p2)
+        cor = float(np.corrcoef(p1, p2)[0, 1])
+        pvalue = 0.0
 
         if abs(cor) < 0.7:
             return {
