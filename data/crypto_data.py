@@ -97,6 +97,30 @@ def get_ticker(symbol: str) -> dict:
     }
 
 
+def get_all_tickers(min_volume_usdt: float = 2_000_000) -> list:
+    """Fetch semua perpetual swap USDT dari OKX, filter by volume."""
+    import urllib3; urllib3.disable_warnings()
+    exchange = get_exchange()
+    tickers  = exchange.fetch_tickers()
+    result   = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        vol    = t.get("quoteVolume") or 0
+        change = t.get("percentage") or 0
+        last   = t.get("last") or 0
+        if vol < min_volume_usdt or last == 0:
+            continue
+        clean = sym.replace(":USDT", "")   # BTC/USDT:USDT → BTC/USDT
+        result.append({
+            "symbol"    : clean,
+            "price"     : last,
+            "change_24h": round(change, 2),
+            "volume_24h": round(vol, 0),
+        })
+    return sorted(result, key=lambda x: x["change_24h"], reverse=True)
+
+
 def get_open_interest(symbol: str) -> dict:
     """Ambil Open Interest dan tren-nya (naik/turun) dari exchange."""
     import urllib3

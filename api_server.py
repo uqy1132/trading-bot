@@ -730,8 +730,8 @@ def smc_analysis(symbol: str, timeframe: str = "1h"):
     try:
         tf_map = {"15M": "15m", "30M": "30m", "1H": "1h", "2H": "2h", "4H": "4h", "1D": "1d"}
         tf = tf_map.get(timeframe.upper(), timeframe.lower())
-        from data.crypto_data import ambil_data_ohlcv
-        df = ambil_data_ohlcv(symbol, tf, limit=200)
+        from data.crypto_data import get_ohlcv
+        df = get_ohlcv(symbol, tf, limit=200)
         if df is None or len(df) < 50:
             raise HTTPException(status_code=400, detail="Data tidak cukup")
         from strategies.indicators import hitung_semua_indikator
@@ -741,7 +741,113 @@ def smc_analysis(symbol: str, timeframe: str = "1h"):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/smc-scan")
+def smc_scan(tf: str = "15M", top_n: int = 25, min_change: float = 3.0):
+    """
+    Scan gainers & losers dari OKX → filter yang punya setup SMC valid.
+    Gainers: pullback ke bullish OB setelah impulse naik.
+    Losers : demand zone setelah dump besar.
+    """
+    try:
+        import traceback
+        from data.crypto_data import get_all_tickers, get_ohlcv
+        tf_map = {"15M": "15m", "30M": "30m", "1H": "1h"}
+        timeframe = tf_map.get(tf.upper(), "15m")
+
+        all_tickers = get_all_tickers()
+        gainers = [t for t in all_tickers if t["change_24h"] >= min_change][:top_n]
+        losers  = [t for t in reversed(all_tickers) if t["change_24h"] <= -min_change][:top_n]
+        candidates = gainers + losers
+
+        hasil = []
+        for ticker in candidates:
+            symbol = ticker["symbol"]
+            try:
+                df = get_ohlcv(symbol, timeframe, limit=200)
+                if df is None or len(df) < 60:
+                    continue
+
+                smc = analisa_smc(df, symbol=symbol)
+
+                # Hanya tampilkan yang dekat OB (dalam 2%)
+                price = smc["price"]
+                near_bull = smc.get("nearest_bull_ob")
+                near_bear = smc.get("nearest_bear_ob")
+
+                dist_bull = abs(price - near_bull["ob_high"]) / price * 100 if near_bull else 999
+                dist_bear = abs(price - near_bear["ob_low"]) / price * 100 if near_bear else 999
+
+                if dist_bull > 3.0 and dist_bear > 3.0:
+                    continue
+
+                # Konfirmasi RSI & EMA sederhana dari data
+                close = df["close"]
+                delta = close.diff()
+                gain  = delta.clip(lower=0).rolling(14).mean()
+                loss  = (-delta.clip(upper=0)).rolling(14).mean()
+                rs    = gain / (loss + 1e-8)
+                rsi   = float(100 - 100 / (1 + rs.iloc[-1]))
+
+                ema20 = float(close.ewm(span=20).mean().iloc[-1])
+                ema50 = float(close.ewm(span=50).mean().iloc[-1])
+                ema_bull = ema20 > ema50
+
+                vol_avg = float(df["volume"].rolling(20).mean().iloc[-1])
+                vol_cur = float(df["volume"].iloc[-1])
+                vol_spike = vol_cur > vol_avg * 1.3
+
+                # Skor konfirmasi
+                conf_score = 0
+                if smc["in_bull_ote"]:  conf_score += 3
+                elif smc["in_bull_ob"]: conf_score += 2
+                if rsi < 45:            conf_score += 1
+                if ema_bull:            conf_score += 1
+                if vol_spike:           conf_score += 1
+
+                kategori = "GAINER" if ticker["change_24h"] > 0 else "LOSER"
+
+                hasil.append({
+                    "symbol"      : symbol,
+                    "price"       : price,
+                    "change_24h"  : ticker["change_24h"],
+                    "kategori"    : kategori,
+                    "bias"        : smc["bias"],
+                    "entry_quality": smc["entry_quality"],
+                    "in_bull_ob"  : smc["in_bull_ob"],
+                    "in_bull_ote" : smc["in_bull_ote"],
+                    "nearest_bull_ob": near_bull,
+                    "nearest_bear_ob": near_bear,
+                    "dist_bull_ob": round(dist_bull, 2),
+                    "fvg_count"   : len(smc.get("bullish_fvgs", [])),
+                    "liquidity_above": smc.get("liquidity_above"),
+                    "rsi"         : round(rsi, 1),
+                    "ema_bull"    : ema_bull,
+                    "vol_spike"   : vol_spike,
+                    "conf_score"  : conf_score,
+                })
+            except Exception:
+                continue
+
+        # Urutkan: OTE dulu, lalu skor konfirmasi tertinggi
+        hasil.sort(key=lambda x: (
+            0 if x["entry_quality"] == "OPTIMAL" else 1 if x["entry_quality"] == "VALID" else 2,
+            -x["conf_score"],
+            x["dist_bull_ob"],
+        ))
+
+        return {
+            "results"  : hasil,
+            "timeframe": tf,
+            "total_scan": len(candidates),
+            "setup_found": len(hasil),
+        }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(500, str(e))
 
 
 @app.get("/api/momentum")
