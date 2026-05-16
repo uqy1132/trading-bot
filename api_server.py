@@ -30,15 +30,41 @@ _smc_last_run = 0.0
 MAX_OPEN_POSITIONS = 5  # batas posisi terbuka sekaligus
 
 
+def _btc_bias() -> str:
+    """
+    Cek bias BTC 4H — hanya masuk BUY kalau BTC tidak sedang bearish.
+    Return: 'BULL' | 'NEUTRAL' | 'BEAR'
+    """
+    try:
+        from data.crypto_data import get_ohlcv as _gohlcv
+        df    = _gohlcv("BTC/USDT", "4h", 60)
+        close = df["close"]
+        ema20 = float(close.ewm(span=20).mean().iloc[-1])
+        ema50 = float(close.ewm(span=50).mean().iloc[-1])
+        # Tambah struktur HH/HL sederhana
+        highs = df["high"].values[-20:]
+        lows  = df["low"].values[-20:]
+        hh    = highs[-1] > highs[-10]   # higher high
+        hl    = lows[-1]  > lows[-10]    # higher low
+        if ema20 > ema50 and (hh or hl):
+            return "BULL"
+        elif ema20 < ema50 * 0.995:
+            return "BEAR"
+        return "NEUTRAL"
+    except Exception:
+        return "NEUTRAL"
+
+
 def _smc_auto_execute():
     """
-    Scan SMC setiap 15 menit → eksekusi virtual order untuk setup OTE/VALID.
-    Filter ketat:
-    - Hanya gainers (trend 24h positif → momentum sejalan)
-    - 1H EMA20 > EMA50 wajib (trend HTF konfirmasi)
-    - conf_score >= 4
-    - TP/SL dihitung dari harga SEKARANG (bukan OB midpoint) → RR 1:3 akurat
-    - Max 5 posisi terbuka sekaligus
+    Scan SMC setiap 15 menit — top-down analysis: 4H → 1H → 15M.
+    Filter:
+    - BTC 4H tidak bearish (Point 2)
+    - 4H ada bullish OB (zona demand makro)
+    - 1H harga dalam atau dekat OB 1H < 2% (zona demand mid)
+    - 15M OTE/OB untuk entry presisi (Point 3)
+    - Partial TP 50% di 1.5R, sisa ke 3R (Point 1, di order_manager)
+    - Max 5 posisi, conf >= 4, hanya gainers
     """
     try:
         from data.crypto_data import get_all_tickers, get_ohlcv
@@ -46,19 +72,24 @@ def _smc_auto_execute():
         from execution.order_manager import kirim_order_virtual, load_virtual_positions
         from risk import hitung_ukuran_posisi
 
+        # ── Point 2: BTC bias filter ──────────────────────────────────────
+        btc = _btc_bias()
+        if btc == "BEAR":
+            print("[smc-auto] BTC 4H bearish — skip semua setup bullish")
+            return
+        print(f"[smc-auto] BTC bias: {btc} → lanjut scan")
+
         open_positions = load_virtual_positions()
         open_pos_list  = [p for p in open_positions if p.get("status") == "OPEN"]
         open_symbols   = {p["symbol"] for p in open_pos_list}
 
-        # Batas posisi terbuka
         if len(open_pos_list) >= MAX_OPEN_POSITIONS:
             print(f"[smc-auto] Max posisi ({MAX_OPEN_POSITIONS}) tercapai, skip scan.")
             return
 
         all_tickers = get_all_tickers()
-        # Hanya gainers — trend 24h positif sejalan dengan bias bullish
-        gainers  = [t for t in all_tickers if t["change_24h"] >= 3][:30]
-        executed = 0
+        gainers     = [t for t in all_tickers if t["change_24h"] >= 3][:30]
+        executed    = 0
 
         for ticker in gainers:
             if len(open_pos_list) + executed >= MAX_OPEN_POSITIONS:
@@ -68,60 +99,77 @@ def _smc_auto_execute():
             if symbol in open_symbols:
                 continue
             try:
-                # ── 15M: deteksi OB/OTE ──────────────────────────────────
+                # ── Point 3A: 4H OB — zona demand makro ─────────────────
+                df4h = get_ohlcv(symbol, "4h", 200)
+                if df4h is None or len(df4h) < 60:
+                    continue
+                smc_4h    = analisa_smc(df4h, symbol=symbol)
+                near_4h   = smc_4h.get("nearest_bull_ob")
+                if not near_4h:
+                    continue  # tidak ada OB 4H → skip
+
+                # ── Point 3B: 1H OB — zona demand mid ───────────────────
+                df1h = get_ohlcv(symbol, "1h", 200)
+                if df1h is None or len(df1h) < 60:
+                    continue
+                smc_1h  = analisa_smc(df1h, symbol=symbol)
+                near_1h = smc_1h.get("nearest_bull_ob")
+                if not near_1h:
+                    continue
+                # Harga harus dalam atau dekat OB 1H (< 2%)
+                price_1h  = smc_1h["price"]
+                in_1h     = smc_1h["in_bull_ob"] or smc_1h["in_bull_ote"]
+                dist_1h   = abs(price_1h - near_1h["ob_high"]) / price_1h * 100
+                if not in_1h and dist_1h > 2.0:
+                    continue
+                # EMA 1H harus bullish
+                cl1h     = df1h["close"]
+                ema20_1h = float(cl1h.ewm(span=20).mean().iloc[-1])
+                ema50_1h = float(cl1h.ewm(span=50).mean().iloc[-1])
+                if ema20_1h <= ema50_1h:
+                    continue
+
+                # ── Point 3C: 15M OTE/OB — entry presisi ────────────────
                 df15 = get_ohlcv(symbol, "15m", 200)
                 if df15 is None or len(df15) < 60:
                     continue
-
                 smc = analisa_smc(df15, symbol=symbol)
                 if smc.get("entry_quality") not in ("OPTIMAL", "VALID"):
                     continue
                 if not smc["in_bull_ob"] and not smc["in_bull_ote"]:
-                    continue  # harga harus SUDAH di dalam OB, bukan hanya "dekat"
-
+                    continue
                 near_bull = smc.get("nearest_bull_ob")
                 if not near_bull:
                     continue
 
-                # ── 1H: filter trend HTF wajib bullish ───────────────────
-                df1h = get_ohlcv(symbol, "1h", 60)
-                if df1h is None or len(df1h) < 50:
-                    continue
-                cl1h  = df1h["close"]
-                ema20_1h = float(cl1h.ewm(span=20).mean().iloc[-1])
-                ema50_1h = float(cl1h.ewm(span=50).mean().iloc[-1])
-                if ema20_1h <= ema50_1h:
-                    continue  # 1H trend bearish → skip
-
                 # ── Konfirmasi 15M ────────────────────────────────────────
-                cl    = df15["close"]
-                delta = cl.diff()
-                gain  = delta.clip(lower=0).rolling(14).mean()
-                loss  = (-delta.clip(upper=0)).rolling(14).mean()
-                rsi   = float(100 - 100 / (1 + gain / (loss + 1e-8)).iloc[-1])
-                ema20 = float(cl.ewm(span=20).mean().iloc[-1])
-                ema50 = float(cl.ewm(span=50).mean().iloc[-1])
-
+                cl        = df15["close"]
+                delta     = cl.diff()
+                gain      = delta.clip(lower=0).rolling(14).mean()
+                loss      = (-delta.clip(upper=0)).rolling(14).mean()
+                rsi       = float(100 - 100 / (1 + gain / (loss + 1e-8)).iloc[-1])
+                ema20_15  = float(cl.ewm(span=20).mean().iloc[-1])
+                ema50_15  = float(cl.ewm(span=50).mean().iloc[-1])
                 vol_avg   = float(df15["volume"].rolling(20).mean().iloc[-1])
-                vol_cur   = float(df15["volume"].iloc[-1])
-                vol_spike = vol_cur > vol_avg * 1.3
+                vol_spike = float(df15["volume"].iloc[-1]) > vol_avg * 1.3
 
                 conf = 0
-                if smc["in_bull_ote"]:  conf += 3
-                elif smc["in_bull_ob"]: conf += 2
-                if rsi < 45:            conf += 1
-                if ema20 > ema50:       conf += 1
-                if vol_spike:           conf += 1
-                if conf < 4:            # threshold lebih ketat dari sebelumnya (3→4)
+                if smc["in_bull_ote"]:   conf += 3
+                elif smc["in_bull_ob"]:  conf += 2
+                if in_1h:                conf += 1  # bonus: harga juga di OB 1H
+                if rsi < 45:             conf += 1
+                if ema20_15 > ema50_15:  conf += 1
+                if vol_spike:            conf += 1
+                if conf < 4:
                     continue
 
-                # ── Entry/SL/TP dari harga SEKARANG (bukan OB midpoint) ──
+                # ── Entry/SL/TP dari harga aktual ────────────────────────
                 price = smc["price"]
                 sl    = near_bull["ob_low"]
                 risk  = price - sl
-                if risk <= 0 or risk / price > 0.06:  # SL max 6% dari entry
+                if risk <= 0 or risk / price > 0.06:
                     continue
-                tp1 = price + risk * 3  # RR 1:3 dari actual fill
+                tp1 = price + risk * 3
 
                 sizing = hitung_ukuran_posisi(price, sl, leverage=2)
                 ukuran = sizing.get("ukuran", 0)
@@ -133,7 +181,7 @@ def _smc_auto_execute():
                     executed += 1
                     open_symbols.add(symbol)
                     quality = smc["entry_quality"]
-                    print(f"[smc-auto] ✅ {symbol} | {quality} conf={conf} | entry={price:.5g} sl={sl:.5g} tp={tp1:.5g}")
+                    print(f"[smc-auto] ✅ {symbol} | 4H+1H+15M | {quality} conf={conf} | entry={price:.5g} sl={sl:.5g} tp={tp1:.5g}")
             except Exception as ex:
                 print(f"[smc-auto] skip {symbol}: {ex}")
 

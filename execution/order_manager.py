@@ -102,41 +102,63 @@ def update_virtual_positions():
             df    = get_ohlcv(pos["symbol"], "1h", 2)
             harga = float(df["close"].iloc[-1])
 
-            # Update trailing stop dulu
+            entry   = pos["fill_price"]
+            sl      = pos["stop_loss"]
+            risk_r  = abs(entry - sl)
+
+            # ── Partial TP di 1.5R (50% close, SL → breakeven) ──────────
+            is_buy = pos["aksi"] in ["BUY", "LONG"]
+            profit = (harga - entry) if is_buy else (entry - harga)
+            r_mult = profit / risk_r if risk_r > 0 else 0
+
+            if r_mult >= 1.5 and not pos.get("partial_tp_done"):
+                ukuran_partial = pos["ukuran"] / 2
+                pnl_partial    = hitung_pnl_bersih(
+                    pos["aksi"], entry, harga, ukuran_partial, pos["leverage"]
+                )["pnl_bersih"]
+                pos["ukuran"]         = round(pos["ukuran"] / 2, 8)
+                pos["partial_tp_done"] = True
+                pos["pnl_partial"]    = round(pnl_partial, 4)
+                pos["stop_loss"]      = entry  # geser SL ke breakeven
+                kirim_discord(
+                    f"🎯 **PARTIAL TP — {pos['symbol']}**\n"
+                    f"50% closed @ `${harga:,.5g}` (+{r_mult:.1f}R)\n"
+                    f"PnL partial: `+{pnl_partial:.4f} USDT`\n"
+                    f"SL digeser ke breakeven `${entry:,.5g}`\n"
+                    f"Sisa 50% jalan ke TP penuh"
+                )
+
+            # ── Update trailing stop ──────────────────────────────────────
             pos = update_trailing_stop(pos, harga)
 
-            # Cek SL/TP
-            if pos["aksi"] in ["BUY", "LONG"]:
+            # ── Cek SL / TP ──────────────────────────────────────────────
+            if is_buy:
                 hit_sl = harga <= pos["stop_loss"]
                 hit_tp = harga >= pos["take_profit"]
-                pnl    = hitung_pnl_bersih(
-                    pos["aksi"], pos["fill_price"], harga,
-                    pos["ukuran"], pos["leverage"]
-                )["pnl_bersih"]
             else:
                 hit_sl = harga >= pos["stop_loss"]
                 hit_tp = harga <= pos["take_profit"]
-                pnl    = hitung_pnl_bersih(
-                    pos["aksi"], pos["fill_price"], harga,
-                    pos["ukuran"], pos["leverage"]
-                )["pnl_bersih"]
+
+            pnl_sisa = hitung_pnl_bersih(
+                pos["aksi"], entry, harga, pos["ukuran"], pos["leverage"]
+            )["pnl_bersih"]
 
             if hit_tp or hit_sl:
-                hasil = "WIN" if hit_tp else "LOSS"
+                hasil     = "WIN" if hit_tp else "LOSS"
+                pnl_total = round(pnl_sisa + pos.get("pnl_partial", 0), 4)
                 pos.update({
-                    "status"     : "CLOSED",
-                    "hasil"      : hasil,
+                    "status"      : "CLOSED",
+                    "hasil"       : hasil,
                     "harga_keluar": harga,
-                    "pnl_usdt"   : pnl,
-                    "waktu_tutup": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    "pnl_usdt"    : pnl_total,
+                    "waktu_tutup" : datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
-                emoji = "🟢" if hit_tp else "🔴"
-                trailing_info = " | 🎯 Trailing SL" if pos.get("trailing") else ""
+                emoji        = "🟢" if hit_tp else "🔴"
+                partial_info = f" | Partial: +{pos['pnl_partial']:.4f}" if pos.get("partial_tp_done") else ""
                 kirim_discord(
-                    f"{emoji} **VIRTUAL CLOSED**\n"
-                    f"**{pos['symbol']}** {pos['aksi']}\n"
-                    f"Hasil: **{hasil}** | Harga: `${harga:,.4f}`\n"
-                    f"PnL bersih: `{'+' if pnl > 0 else ''}{pnl:.4f} USDT`{trailing_info}"
+                    f"{emoji} **VIRTUAL CLOSED — {pos['symbol']}**\n"
+                    f"Hasil: **{hasil}** | Harga: `${harga:,.5g}`\n"
+                    f"PnL total: `{'+' if pnl_total > 0 else ''}{pnl_total:.4f} USDT`{partial_info}"
                 )
                 closed_now.append(pos)
 
@@ -170,19 +192,22 @@ def kirim_order_virtual(symbol, aksi, ukuran, entry, sl, tp1, leverage=2) -> dic
 
         order_id = f"VIRTUAL_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         posisi = {
-            "order_id"   : order_id,
-            "symbol"     : symbol,
-            "aksi"       : aksi,
-            "ukuran"     : ukuran,
-            "entry_plan" : entry,
-            "fill_price" : round(fill_price, 6),
-            "stop_loss"  : sl,
-            "take_profit": tp1,
-            "leverage"   : leverage,
-            "status"     : "OPEN",
-            "mode"       : "VIRTUAL",
-            "waktu"      : datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "pnl_usdt"   : 0,
+            "order_id"       : order_id,
+            "symbol"         : symbol,
+            "aksi"           : aksi,
+            "ukuran"         : ukuran,
+            "ukuran_awal"    : ukuran,
+            "entry_plan"     : entry,
+            "fill_price"     : round(fill_price, 6),
+            "stop_loss"      : sl,
+            "take_profit"    : tp1,
+            "leverage"       : leverage,
+            "status"         : "OPEN",
+            "mode"           : "VIRTUAL",
+            "waktu"          : datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "pnl_usdt"       : 0,
+            "partial_tp_done": False,
+            "pnl_partial"    : 0.0,
         }
 
         positions = load_virtual_positions()
