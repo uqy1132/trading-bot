@@ -30,6 +30,19 @@ _smc_last_run = 0.0
 MAX_OPEN_POSITIONS = 5  # batas posisi terbuka sekaligus
 
 
+def _is_trading_session() -> bool:
+    """
+    True kalau sedang dalam London atau New York session (UTC).
+    London : 07:00–16:00 UTC  = 14:00–23:00 WIB
+    New York: 12:00–20:00 UTC  = 19:00–03:00 WIB
+    Gabungan aktif: 07:00–20:00 UTC (14:00–03:00 WIB)
+    Skip Asian session: 20:00–07:00 UTC (03:00–14:00 WIB)
+    """
+    from datetime import datetime, timezone
+    hour = datetime.now(timezone.utc).hour
+    return 7 <= hour < 20
+
+
 def _btc_bias() -> str:
     """
     Cek bias BTC 4H — hanya masuk BUY kalau BTC tidak sedang bearish.
@@ -71,6 +84,13 @@ def _smc_auto_execute():
         from strategies.smc import analisa_smc
         from execution.order_manager import kirim_order_virtual, load_virtual_positions
         from risk import hitung_ukuran_posisi
+
+        # ── Session filter ────────────────────────────────────────────────
+        if not _is_trading_session():
+            from datetime import datetime, timezone
+            hour = datetime.now(timezone.utc).hour
+            print(f"[smc-auto] Asian session ({hour:02d}:xx UTC / {(hour+7)%24:02d}:xx WIB) — skip")
+            return
 
         # ── Point 2: BTC bias filter ──────────────────────────────────────
         btc = _btc_bias()
